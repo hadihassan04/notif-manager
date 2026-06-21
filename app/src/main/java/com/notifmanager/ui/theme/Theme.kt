@@ -23,34 +23,34 @@ object MdSpacing {
     val xl = 48.dp
 }
 
-private val LightColors = lightColorScheme(
-    primary = Color(0xFF6750A4),
+private val FallbackLightColors = lightColorScheme(
+    primary = Color(0xFF386A5F),
     onPrimary = Color(0xFFFFFFFF),
-    primaryContainer = Color(0xFFEADDFF),
-    onPrimaryContainer = Color(0xFF21005D),
-    secondary = Color(0xFF625B71),
+    primaryContainer = Color(0xFFBCECE0),
+    onPrimaryContainer = Color(0xFF00201B),
+    secondary = Color(0xFF4B635D),
     onSecondary = Color(0xFFFFFFFF),
-    secondaryContainer = Color(0xFFE8DEF8),
-    onSecondaryContainer = Color(0xFF1D192B),
-    tertiary = Color(0xFF7D5260),
+    secondaryContainer = Color(0xFFCDE8E0),
+    onSecondaryContainer = Color(0xFF07201B),
+    tertiary = Color(0xFF456179),
     onTertiary = Color(0xFFFFFFFF),
-    tertiaryContainer = Color(0xFFFFD8E4),
-    onTertiaryContainer = Color(0xFF31111D),
+    tertiaryContainer = Color(0xFFCBE6FF),
+    onTertiaryContainer = Color(0xFF001E31),
 )
 
-private val DarkColors = darkColorScheme(
-    primary = Color(0xFFD0BCFF),
-    onPrimary = Color(0xFF381E72),
-    primaryContainer = Color(0xFF4F378B),
-    onPrimaryContainer = Color(0xFFEADDFF),
-    secondary = Color(0xFFCCC2DC),
-    onSecondary = Color(0xFF332D41),
-    secondaryContainer = Color(0xFF4A4458),
-    onSecondaryContainer = Color(0xFFE8DEF8),
-    tertiary = Color(0xFFEFB8C8),
-    onTertiary = Color(0xFF492532),
-    tertiaryContainer = Color(0xFF633B48),
-    onTertiaryContainer = Color(0xFFFFD8E4),
+private val FallbackDarkColors = darkColorScheme(
+    primary = Color(0xFFA0D0C4),
+    onPrimary = Color(0xFF00382F),
+    primaryContainer = Color(0xFF1F5147),
+    onPrimaryContainer = Color(0xFFBCECE0),
+    secondary = Color(0xFFB1CCC4),
+    onSecondary = Color(0xFF1D352F),
+    secondaryContainer = Color(0xFF344C46),
+    onSecondaryContainer = Color(0xFFCDE8E0),
+    tertiary = Color(0xFFACCBE5),
+    onTertiary = Color(0xFF123349),
+    tertiaryContainer = Color(0xFF2D4960),
+    onTertiaryContainer = Color(0xFFCBE6FF),
 )
 
 @Composable
@@ -64,8 +64,8 @@ fun NotifManagerTheme(
             val context = LocalContext.current
             if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
         }
-        darkTheme -> DarkColors
-        else -> LightColors
+        darkTheme -> FallbackDarkColors
+        else -> FallbackLightColors
     }
 
     MaterialTheme(

@@ -23,6 +23,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -40,12 +41,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -54,7 +54,6 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Inbox
 import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.NotificationsActive
@@ -88,12 +87,15 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TimePicker
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -108,7 +110,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -329,8 +330,8 @@ class MainViewModel(
 }
 
 private enum class Destination(val route: String, val label: String, val icon: ImageVector) {
-    Inbox("inbox", "Inbox", Icons.Filled.Inbox),
-    History("history", "History", Icons.Filled.History),
+    Inbox("inbox", "Notifications", Icons.Filled.Inbox),
+    Insights("insights", "Insights", Icons.Filled.Insights),
     Rules("rules", "Rules", Icons.Filled.Tune),
     Schedule("schedule", "Schedule", Icons.Filled.Schedule),
     Settings("settings", "Settings", Icons.Filled.Settings),
@@ -350,7 +351,7 @@ private fun NotifManagerApp(viewModel: MainViewModel, initialBatchId: String?) {
     val backStack by navController.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route ?: Destination.Inbox.route
     val topLevel = Destination.entries.firstOrNull { it.route == currentRoute }
-    val title = topLevel?.label ?: if (currentRoute.startsWith("batch/")) "Batch detail" else "Inbox"
+    val title = topLevel?.label ?: if (currentRoute.startsWith("batch/")) "Batch detail" else "Notifications"
 
     LaunchedEffect(initialBatchId) {
         if (initialBatchId != null) {
@@ -412,8 +413,12 @@ private fun NotifManagerApp(viewModel: MainViewModel, initialBatchId: String?) {
                 ) {
                     composable(Destination.Inbox.route) {
                         val inbox by viewModel.inbox.collectAsStateWithLifecycle()
-                        InboxScreen(
+                        val notifications by viewModel.history.collectAsStateWithLifecycle()
+                        val insights by viewModel.insights.collectAsStateWithLifecycle()
+                        NotificationsScreen(
                             batches = inbox,
+                            notifications = notifications,
+                            insights = insights,
                             snackbarHostState = snackbarHostState,
                             onOpenBatch = { navController.navigate("batch/$it") },
                             onArchiveBatch = viewModel::archiveBatch,
@@ -424,15 +429,9 @@ private fun NotifManagerApp(viewModel: MainViewModel, initialBatchId: String?) {
                             onMarkNotificationRead = viewModel::markNotificationRead,
                         )
                     }
-                    composable(Destination.History.route) {
-                        val history by viewModel.history.collectAsStateWithLifecycle()
-                        HistoryScreen(
-                            notifications = history,
-                            snackbarHostState = snackbarHostState,
-                            onArchiveNotification = viewModel::archiveNotification,
-                            onUnarchiveNotification = viewModel::unarchiveNotification,
-                            onMarkNotificationRead = viewModel::markNotificationRead,
-                        )
+                    composable(Destination.Insights.route) {
+                        val insights by viewModel.insights.collectAsStateWithLifecycle()
+                        InsightsScreen(insights)
                     }
                     composable(Destination.Rules.route) {
                         val rules by viewModel.rulesUi.collectAsStateWithLifecycle()
@@ -528,8 +527,10 @@ private fun navigateTopLevel(navController: NavHostController, route: String) {
 }
 
 @Composable
-private fun InboxScreen(
+private fun NotificationsScreen(
     batches: List<InboxBatch>,
+    notifications: List<NotificationEntity>,
+    insights: Insights,
     snackbarHostState: SnackbarHostState,
     onOpenBatch: (String) -> Unit,
     onArchiveBatch: (String) -> Unit,
@@ -541,46 +542,226 @@ private fun InboxScreen(
 ) {
     val expandedBatchIds = remember { mutableStateListOf<String>() }
     val scope = rememberCoroutineScope()
-    if (batches.isEmpty()) {
-        EmptyState(
-            title = "Inbox is clear",
-            body = "Held notifications will appear here as collapsible batches until their digest arrives.",
-        )
-        return
+    var viewMode by remember { mutableStateOf(NotificationViewMode.Inbox) }
+    var query by remember { mutableStateOf("") }
+    var modeFilter by remember { mutableStateOf<DeliveryMode?>(null) }
+    val archivedCount = notifications.count { it.isArchived }
+    val heldCount = batches.sumOf { it.notificationCount }
+    val visibleBatches = batches.filter { batch ->
+        query.isBlank() ||
+            batch.title.contains(query, ignoreCase = true) ||
+            batch.summaryText.contains(query, ignoreCase = true) ||
+            batch.topApps.any { it.contains(query, ignoreCase = true) } ||
+            batch.notifications.any { it.matches(query) }
     }
+    val filteredNotifications = notifications
+        .filter { it.matches(query) }
+        .filter { modeFilter == null || it.deliveryMode == modeFilter }
+        .filter {
+            when (viewMode) {
+                NotificationViewMode.Inbox -> !it.isArchived
+                NotificationViewMode.All -> true
+                NotificationViewMode.Archived -> it.isArchived
+            }
+        }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(MdSpacing.sm),
         verticalArrangement = Arrangement.spacedBy(MdSpacing.sm),
     ) {
-        items(batches, key = { it.batchId }) { batch ->
-            val expanded = batch.batchId in expandedBatchIds
-            BatchSummaryCard(
-                batch = batch,
-                expanded = expanded,
-                onToggle = {
-                    if (expanded) expandedBatchIds.remove(batch.batchId) else expandedBatchIds.add(batch.batchId)
-                },
-                onOpenBatch = {
-                    onMarkBatchRead(batch.batchId)
-                    onOpenBatch(batch.batchId)
-                },
-                onArchiveBatch = {
-                    onArchiveBatch(batch.batchId)
-                    scope.launch {
-                        val result = snackbarHostState.showSnackbar("Batch archived", "Undo")
-                        if (result.name == "ActionPerformed") onUnarchiveBatch(batch.batchId)
+        item {
+            InboxOverviewCard(batches = batches, insights = insights)
+        }
+        item {
+            SearchField(query, onQueryChange = { query = it }, placeholder = "Search notifications")
+        }
+        item {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs),
+            ) {
+                FilterChip(
+                    selected = viewMode == NotificationViewMode.Inbox,
+                    onClick = { viewMode = NotificationViewMode.Inbox },
+                    label = { Text("Inbox ($heldCount)") },
+                )
+                FilterChip(
+                    selected = viewMode == NotificationViewMode.All,
+                    onClick = { viewMode = NotificationViewMode.All },
+                    label = { Text("All (${notifications.size})") },
+                )
+                FilterChip(
+                    selected = viewMode == NotificationViewMode.Archived,
+                    onClick = { viewMode = NotificationViewMode.Archived },
+                    label = { Text("Archived ($archivedCount)") },
+                )
+            }
+        }
+        if (viewMode == NotificationViewMode.Inbox) {
+            if (visibleBatches.isEmpty()) {
+                item {
+                    EmptyState(
+                        title = if (query.isBlank()) "Inbox is clear" else "No inbox results",
+                        body = if (query.isBlank()) {
+                            "Held notifications will appear here as collapsible batches until their digest arrives."
+                        } else {
+                            "Try a different search or switch to All notifications."
+                        },
+                    )
+                }
+            }
+            items(visibleBatches, key = { it.batchId }) { batch ->
+                val expanded = batch.batchId in expandedBatchIds
+                BatchSummaryCard(
+                    batch = batch,
+                    expanded = expanded,
+                    onToggle = {
+                        if (expanded) expandedBatchIds.remove(batch.batchId) else expandedBatchIds.add(batch.batchId)
+                    },
+                    onOpenBatch = {
+                        onMarkBatchRead(batch.batchId)
+                        onOpenBatch(batch.batchId)
+                    },
+                    onArchiveBatch = {
+                        onArchiveBatch(batch.batchId)
+                        scope.launch {
+                            val result = snackbarHostState.showSnackbar("Batch archived", "Undo")
+                            if (result.name == "ActionPerformed") onUnarchiveBatch(batch.batchId)
+                        }
+                    },
+                    onArchiveNotification = { key ->
+                        onArchiveNotification(key)
+                        scope.launch {
+                            val result = snackbarHostState.showSnackbar("Notification archived", "Undo")
+                            if (result.name == "ActionPerformed") onUnarchiveNotification(key)
+                        }
+                    },
+                    onMarkNotificationRead = onMarkNotificationRead,
+                )
+            }
+        } else {
+            item {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs),
+                ) {
+                    FilterChip(selected = modeFilter == null, onClick = { modeFilter = null }, label = { Text("Any mode") })
+                    FilterChip(selected = modeFilter == DeliveryMode.BATCH, onClick = { modeFilter = DeliveryMode.BATCH }, label = { Text("Batched") })
+                    FilterChip(selected = modeFilter == DeliveryMode.INSTANT, onClick = { modeFilter = DeliveryMode.INSTANT }, label = { Text("Instant") })
+                }
+            }
+            item {
+                Text(
+                    "${filteredNotifications.size} notifications",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (filteredNotifications.isEmpty()) {
+                item { EmptyState("No results", "Clear filters or wait for new captured notifications.") }
+            }
+            items(filteredNotifications, key = { it.notificationKey }) { item ->
+                NotificationRow(
+                    item = item,
+                    archiveLabel = if (item.isArchived) "Restore" else "Archive",
+                    onArchive = {
+                        if (item.isArchived) {
+                            onUnarchiveNotification(item.notificationKey)
+                        } else {
+                            onArchiveNotification(item.notificationKey)
+                            scope.launch {
+                                val result = snackbarHostState.showSnackbar("Notification archived", "Undo")
+                                if (result.name == "ActionPerformed") onUnarchiveNotification(item.notificationKey)
+                            }
+                        }
+                    },
+                    onRestore = null,
+                    onMarkRead = { onMarkNotificationRead(item.notificationKey) },
+                )
+            }
+        }
+    }
+}
+
+private enum class NotificationViewMode {
+    Inbox,
+    All,
+    Archived,
+}
+
+@Composable
+private fun InboxOverviewCard(batches: List<InboxBatch>, insights: Insights) {
+    val heldCount = batches.sumOf { it.notificationCount }
+    val unreadCount = batches.sumOf { it.unreadCount }
+    val nextDigest = batches
+        .map { it.releaseLabel }
+        .firstOrNull { it.isNotBlank() && it != "Digest pending" }
+        ?: "No digest pending"
+    val topApp = insights.topApps.firstOrNull()?.appLabel ?: "No noisy app yet"
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+        shape = MaterialTheme.shapes.large,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(MdSpacing.sm),
+            verticalArrangement = Arrangement.spacedBy(MdSpacing.sm),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(MdSpacing.sm),
+            ) {
+                Surface(modifier = Modifier.size(52.dp), shape = CircleShape, color = MaterialTheme.colorScheme.primary) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(Icons.Filled.Inbox, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimary)
                     }
-                },
-                onArchiveNotification = { key ->
-                    onArchiveNotification(key)
-                    scope.launch {
-                        val result = snackbarHostState.showSnackbar("Notification archived", "Undo")
-                        if (result.name == "ActionPerformed") onUnarchiveNotification(key)
-                    }
-                },
-                onMarkNotificationRead = onMarkNotificationRead,
+                }
+                Column(Modifier.weight(1f)) {
+                    Text("Notification quiet zone", style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        "$heldCount held · $unreadCount unread",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs),
+            ) {
+                CompactStat("Next", nextDigest, Modifier.weight(1f))
+                CompactStat("Saved", insights.distractionsSaved.toString(), Modifier.weight(1f))
+                CompactStat("Top app", topApp, Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+@Composable
+private fun CompactStat(label: String, value: String, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier.heightIn(min = 72.dp),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.58f),
+        shape = MaterialTheme.shapes.medium,
+    ) {
+        Column(
+            modifier = Modifier.padding(MdSpacing.xs),
+            verticalArrangement = Arrangement.spacedBy(MdSpacing.xxs),
+        ) {
+            Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                value,
+                style = MaterialTheme.typography.titleSmall,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }
@@ -746,67 +927,6 @@ private fun BatchDetailScreen(
 }
 
 @Composable
-private fun HistoryScreen(
-    notifications: List<NotificationEntity>,
-    snackbarHostState: SnackbarHostState,
-    onArchiveNotification: (String) -> Unit,
-    onUnarchiveNotification: (String) -> Unit,
-    onMarkNotificationRead: (String) -> Unit,
-) {
-    val scope = rememberCoroutineScope()
-    var query by remember { mutableStateOf("") }
-    var modeFilter by remember { mutableStateOf<DeliveryMode?>(null) }
-    var archivedOnly by remember { mutableStateOf(false) }
-    val filtered = notifications
-        .filter { it.matches(query) }
-        .filter { modeFilter == null || it.deliveryMode == modeFilter }
-        .filter { !archivedOnly || it.isArchived }
-
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(MdSpacing.sm),
-        verticalArrangement = Arrangement.spacedBy(MdSpacing.sm),
-    ) {
-        item {
-            SearchField(query, onQueryChange = { query = it }, placeholder = "Search history")
-        }
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
-                FilterChip(selected = modeFilter == null && !archivedOnly, onClick = { modeFilter = null; archivedOnly = false }, label = { Text("All") })
-                FilterChip(selected = modeFilter == DeliveryMode.BATCH, onClick = { modeFilter = DeliveryMode.BATCH; archivedOnly = false }, label = { Text("Batched") })
-                FilterChip(selected = modeFilter == DeliveryMode.INSTANT, onClick = { modeFilter = DeliveryMode.INSTANT; archivedOnly = false }, label = { Text("Instant") })
-                FilterChip(selected = archivedOnly, onClick = { archivedOnly = !archivedOnly }, label = { Text("Archived") })
-            }
-        }
-        item {
-            Text("${filtered.size} notifications", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        if (filtered.isEmpty()) {
-            item { EmptyState("No results", "Clear filters or wait for new captured notifications.") }
-        }
-        items(filtered, key = { it.notificationKey }) { item ->
-            NotificationRow(
-                item = item,
-                archiveLabel = if (item.isArchived) "Restore" else "Archive",
-                onArchive = {
-                    if (item.isArchived) {
-                        onUnarchiveNotification(item.notificationKey)
-                    } else {
-                        onArchiveNotification(item.notificationKey)
-                        scope.launch {
-                            val result = snackbarHostState.showSnackbar("Notification archived", "Undo")
-                            if (result.name == "ActionPerformed") onUnarchiveNotification(item.notificationKey)
-                        }
-                    }
-                },
-                onRestore = null,
-                onMarkRead = { onMarkNotificationRead(item.notificationKey) },
-            )
-        }
-    }
-}
-
-@Composable
 private fun NotificationRow(
     item: NotificationEntity,
     archiveLabel: String,
@@ -816,40 +936,79 @@ private fun NotificationRow(
 ) {
     val context = LocalContext.current
     var selected by remember { mutableStateOf<NotificationEntity?>(null) }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(MaterialTheme.shapes.medium)
-            .clickable { selected = item }
-            .padding(MdSpacing.xs),
-        horizontalArrangement = Arrangement.spacedBy(MdSpacing.sm),
-        verticalAlignment = Alignment.Top,
+    val dismissState = rememberSwipeToDismissBoxState(
+        confirmValueChange = { value ->
+            when (value) {
+                SwipeToDismissBoxValue.StartToEnd -> {
+                    if (!item.isRead) onMarkRead()
+                    false
+                }
+                SwipeToDismissBoxValue.EndToStart -> {
+                    onArchive()
+                    false
+                }
+                SwipeToDismissBoxValue.Settled -> false
+            }
+        },
+    )
+    SwipeToDismissBox(
+        state = dismissState,
+        enableDismissFromStartToEnd = !item.isRead,
+        enableDismissFromEndToStart = true,
+        backgroundContent = {
+            SwipeActionBackground(
+                direction = dismissState.dismissDirection,
+                archiveLabel = archiveLabel,
+                markReadEnabled = !item.isRead,
+            )
+        },
     ) {
-        AppIcon(packageName = item.packageName, label = item.appLabel)
-        Column(Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
-                Text(item.appLabel, style = MaterialTheme.typography.labelLarge)
-                if (!item.isRead) {
-                    Surface(modifier = Modifier.size(8.dp), shape = CircleShape, color = MaterialTheme.colorScheme.primary) {}
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = MaterialTheme.colorScheme.surface,
+            shape = MaterialTheme.shapes.medium,
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(MaterialTheme.shapes.medium)
+                    .clickable { selected = item }
+                    .padding(MdSpacing.xs),
+                horizontalArrangement = Arrangement.spacedBy(MdSpacing.sm),
+                verticalAlignment = Alignment.Top,
+            ) {
+                AppIcon(packageName = item.packageName, label = item.appLabel)
+                Column(Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
+                        Text(item.appLabel, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (!item.isRead) {
+                            Surface(modifier = Modifier.size(8.dp), shape = CircleShape, color = MaterialTheme.colorScheme.primary) {}
+                        }
+                    }
+                    Text(
+                        item.title ?: "Notification",
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = if (item.isRead) FontWeight.Normal else FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (!item.text.isNullOrBlank()) {
+                        Text(
+                            item.text,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    Text(
+                        "${formatTime(item.postedAtMillis)} · ${item.deliveryMode.name.lowercase()}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
-            Text(item.title ?: "Notification", style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (!item.text.isNullOrBlank()) {
-                Text(
-                    item.text,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            Text(
-                "${formatTime(item.postedAtMillis)} · ${item.deliveryMode.name.lowercase()}",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
-        FilledTonalButton(onClick = onArchive) { Text(archiveLabel) }
     }
     if (selected != null) {
         NotificationDetailDialog(
@@ -866,6 +1025,45 @@ private fun NotificationRow(
             },
             onRestore = onRestore,
         )
+    }
+}
+
+@Composable
+private fun SwipeActionBackground(
+    direction: SwipeToDismissBoxValue,
+    archiveLabel: String,
+    markReadEnabled: Boolean,
+) {
+    val isMarkRead = direction == SwipeToDismissBoxValue.StartToEnd
+    val isArchive = direction == SwipeToDismissBoxValue.EndToStart
+    val color = when {
+        isMarkRead -> MaterialTheme.colorScheme.secondaryContainer
+        isArchive -> MaterialTheme.colorScheme.tertiaryContainer
+        else -> Color.Transparent
+    }
+    val contentColor = when {
+        isMarkRead -> MaterialTheme.colorScheme.onSecondaryContainer
+        isArchive -> MaterialTheme.colorScheme.onTertiaryContainer
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    val alignment = if (isMarkRead) Alignment.CenterStart else Alignment.CenterEnd
+    val icon = if (isMarkRead) Icons.Filled.CheckCircle else if (archiveLabel == "Restore") Icons.Filled.Restore else Icons.Filled.Archive
+    val label = if (isMarkRead) "Mark read" else archiveLabel
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .clip(MaterialTheme.shapes.medium)
+            .background(color)
+            .padding(horizontal = MdSpacing.sm),
+        contentAlignment = alignment,
+    ) {
+        if (isArchive || markReadEnabled) {
+            Row(horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs), verticalAlignment = Alignment.CenterVertically) {
+                Icon(icon, contentDescription = null, tint = contentColor)
+                Text(label, style = MaterialTheme.typography.labelLarge, color = contentColor)
+            }
+        }
     }
 }
 
@@ -976,29 +1174,48 @@ private fun AppRuleCard(
                 .padding(MdSpacing.sm),
             verticalArrangement = Arrangement.spacedBy(MdSpacing.sm),
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(MdSpacing.sm),
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 56.dp),
             ) {
-                AppIcon(packageName = appRule.app.packageName, label = appRule.app.label, modifier = Modifier.size(40.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        appRule.app.label,
-                        style = MaterialTheme.typography.titleMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Text(
-                        appRule.summaryLine(),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(end = if (appRule.channels.isNotEmpty()) 48.dp else 0.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(MdSpacing.sm),
+                ) {
+                    AppIcon(packageName = appRule.app.packageName, label = appRule.app.label, modifier = Modifier.size(40.dp))
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .widthIn(min = 96.dp),
+                    ) {
+                        Text(
+                            appRule.app.label,
+                            style = MaterialTheme.typography.titleMedium,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            appRule.summaryLine(),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
-                IconButton(onClick = { expanded = !expanded }, enabled = appRule.channels.isNotEmpty()) {
-                    Icon(if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore, contentDescription = "Channels")
+                if (appRule.channels.isNotEmpty()) {
+                    IconButton(
+                        modifier = Modifier.align(Alignment.CenterEnd),
+                        onClick = { expanded = !expanded },
+                    ) {
+                        Icon(if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore, contentDescription = "Channels")
+                    }
                 }
             }
             DeliveryModeSelector(appRule.app.mode) { onSetAppMode(appRule.app, it) }
@@ -1252,6 +1469,7 @@ private fun SettingsScreen(
     val canPost = rememberCanPostNotifications(context)
     val listenerEnabled = rememberNotificationListenerEnabled(context)
     val exactAlarmReady = rememberExactAlarmReady(context)
+    val monetAvailable = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(MdSpacing.sm),
@@ -1295,7 +1513,19 @@ private fun SettingsScreen(
             )
         }
         item { SwitchRow("Show system apps", "Include system apps in Rules.", showSystemApps, onShowSystemApps) }
-        item { SwitchRow("Dynamic color", "Use your Android wallpaper color scheme.", dynamicColor, onDynamicColor) }
+        item {
+            SwitchRow(
+                title = "Monet colors",
+                body = if (monetAvailable) {
+                    "Match the app to your Android wallpaper colors."
+                } else {
+                    "Available on Android 12 and newer. This device uses the fallback theme."
+                },
+                checked = dynamicColor && monetAvailable,
+                enabled = monetAvailable,
+                onChecked = onDynamicColor,
+            )
+        }
         item {
             RetentionCard(retentionDays = retentionDays, onRetentionDays = onRetentionDays, onCleanupNow = onCleanupNow)
         }
@@ -1312,7 +1542,7 @@ private fun RetentionCard(retentionDays: Int, onRetentionDays: (Int) -> Unit, on
     var expanded by remember { mutableStateOf(false) }
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow), shape = MaterialTheme.shapes.medium) {
         Column(Modifier.padding(MdSpacing.sm), verticalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
-            Text("Delete history older than", style = MaterialTheme.typography.titleMedium)
+            Text("Delete notification records older than", style = MaterialTheme.typography.titleMedium)
             Text(retentionLabel(retentionDays), color = MaterialTheme.colorScheme.onSurfaceVariant)
             Box {
                 FilledTonalButton(onClick = { expanded = true }) { Text("Change retention") }
@@ -1328,13 +1558,19 @@ private fun RetentionCard(retentionDays: Int, onRetentionDays: (Int) -> Unit, on
                     }
                 }
             }
-            OutlinedButton(onClick = onCleanupNow) { Text("Clear old history now") }
+            OutlinedButton(onClick = onCleanupNow) { Text("Clear old records now") }
         }
     }
 }
 
 @Composable
-private fun SwitchRow(title: String, body: String, checked: Boolean, onChecked: (Boolean) -> Unit) {
+private fun SwitchRow(
+    title: String,
+    body: String,
+    checked: Boolean,
+    onChecked: (Boolean) -> Unit,
+    enabled: Boolean = true,
+) {
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow), shape = MaterialTheme.shapes.medium) {
         Row(
             modifier = Modifier.padding(MdSpacing.sm),
@@ -1345,7 +1581,7 @@ private fun SwitchRow(title: String, body: String, checked: Boolean, onChecked: 
                 Text(title, style = MaterialTheme.typography.titleMedium)
                 Text(body, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            Switch(checked = checked, onCheckedChange = onChecked)
+            Switch(checked = checked, onCheckedChange = onChecked, enabled = enabled)
         }
     }
 }
