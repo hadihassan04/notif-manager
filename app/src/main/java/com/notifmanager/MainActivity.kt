@@ -41,7 +41,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -75,7 +74,7 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LargeTopAppBar
+import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -330,10 +329,10 @@ class MainViewModel(
 }
 
 private enum class Destination(val route: String, val label: String, val icon: ImageVector) {
-    Inbox("inbox", "Notifications", Icons.Filled.Inbox),
-    Insights("insights", "Insights", Icons.Filled.Insights),
-    Rules("rules", "Rules", Icons.Filled.Tune),
+    Inbox("inbox", "Notifs", Icons.Filled.Inbox),
     Schedule("schedule", "Schedule", Icons.Filled.Schedule),
+    Rules("rules", "Rules", Icons.Filled.Tune),
+    Insights("insights", "Insights", Icons.Filled.Insights),
     Settings("settings", "Settings", Icons.Filled.Settings),
 }
 
@@ -351,7 +350,7 @@ private fun NotifManagerApp(viewModel: MainViewModel, initialBatchId: String?) {
     val backStack by navController.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route ?: Destination.Inbox.route
     val topLevel = Destination.entries.firstOrNull { it.route == currentRoute }
-    val title = topLevel?.label ?: if (currentRoute.startsWith("batch/")) "Batch detail" else "Notifications"
+    val title = topLevel?.label ?: if (currentRoute.startsWith("batch/")) "Batch detail" else "Notifs"
 
     LaunchedEffect(initialBatchId) {
         if (initialBatchId != null) {
@@ -364,7 +363,7 @@ private fun NotifManagerApp(viewModel: MainViewModel, initialBatchId: String?) {
         val useRail = maxWidth >= 600.dp
         Scaffold(
             topBar = {
-                LargeTopAppBar(
+                TopAppBar(
                     title = { Text(title) },
                     navigationIcon = {
                         if (topLevel == null) {
@@ -373,7 +372,14 @@ private fun NotifManagerApp(viewModel: MainViewModel, initialBatchId: String?) {
                             }
                         }
                     },
-                    colors = TopAppBarDefaults.largeTopAppBarColors(
+                    actions = {
+                        if (currentRoute != Destination.Settings.route) {
+                            IconButton(onClick = { navigateTopLevel(navController, Destination.Settings.route) }) {
+                                Icon(Icons.Filled.Settings, contentDescription = "Settings")
+                            }
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
                         containerColor = MaterialTheme.colorScheme.surface,
                         scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer,
                     ),
@@ -492,7 +498,7 @@ private fun NotifManagerApp(viewModel: MainViewModel, initialBatchId: String?) {
 @Composable
 private fun AppNavigationBar(navController: NavHostController, currentRoute: String) {
     NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
-        Destination.entries.forEach { destination ->
+        Destination.entries.filter { it != Destination.Settings }.forEach { destination ->
             NavigationBarItem(
                 selected = currentRoute == destination.route,
                 onClick = { navigateTopLevel(navController, destination.route) },
@@ -507,7 +513,7 @@ private fun AppNavigationBar(navController: NavHostController, currentRoute: Str
 private fun AppNavigationRail(navController: NavHostController, currentRoute: String) {
     NavigationRail(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
         Spacer(Modifier.height(MdSpacing.sm))
-        Destination.entries.forEach { destination ->
+        Destination.entries.filter { it != Destination.Settings }.forEach { destination ->
             NavigationRailItem(
                 selected = currentRoute == destination.route,
                 onClick = { navigateTopLevel(navController, destination.route) },
@@ -604,11 +610,11 @@ private fun NotificationsScreen(
             if (visibleBatches.isEmpty()) {
                 item {
                     EmptyState(
-                        title = if (query.isBlank()) "Inbox is clear" else "No inbox results",
+                        title = if (query.isBlank()) "You're all caught up" else "No results",
                         body = if (query.isBlank()) {
-                            "Held notifications will appear here as collapsible batches until their digest arrives."
+                            "Batched notifications appear here grouped by app, until their scheduled delivery window."
                         } else {
-                            "Try a different search or switch to All notifications."
+                            "Try a different search or switch to All."
                         },
                     )
                 }
@@ -649,8 +655,10 @@ private fun NotificationsScreen(
                         .fillMaxWidth()
                         .horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    FilterChip(selected = modeFilter == null, onClick = { modeFilter = null }, label = { Text("Any mode") })
+                    Text("Mode:", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    FilterChip(selected = modeFilter == null, onClick = { modeFilter = null }, label = { Text("All") })
                     FilterChip(selected = modeFilter == DeliveryMode.BATCH, onClick = { modeFilter = DeliveryMode.BATCH }, label = { Text("Batched") })
                     FilterChip(selected = modeFilter == DeliveryMode.INSTANT, onClick = { modeFilter = DeliveryMode.INSTANT }, label = { Text("Instant") })
                 }
@@ -827,9 +835,10 @@ private fun BatchSummaryCard(
                 FilledTonalButton(onClick = onOpenBatch) {
                     Text("Open batch")
                 }
-                AssistChip(
-                    onClick = {},
-                    label = { Text(if (batch.unreadCount > 0) "${batch.unreadCount} unread" else "Read") },
+                Text(
+                    if (batch.unreadCount > 0) "${batch.unreadCount} unread" else "All read",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 TopAppIcons(batch.topApps)
             }
@@ -909,7 +918,11 @@ private fun BatchDetailScreen(
                 ) {
                     Text("Archive batch")
                 }
-                AssistChip(onClick = {}, label = { Text("${filtered.size} shown") })
+                Text(
+                    "${filtered.size} notifications",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
         items(filtered, key = { it.notificationKey }) { item ->
@@ -1134,7 +1147,7 @@ private fun RulesScreen(
                 FilterChip(selected = modeFilter == null && !overridesOnly, onClick = { modeFilter = null; overridesOnly = false }, label = { Text("All") })
                 FilterChip(selected = modeFilter == DeliveryMode.BATCH, onClick = { modeFilter = DeliveryMode.BATCH; overridesOnly = false }, label = { Text("Batched") })
                 FilterChip(selected = modeFilter == DeliveryMode.INSTANT, onClick = { modeFilter = DeliveryMode.INSTANT; overridesOnly = false }, label = { Text("Instant") })
-                FilterChip(selected = overridesOnly, onClick = { overridesOnly = !overridesOnly }, label = { Text("Overrides") })
+                FilterChip(selected = overridesOnly, onClick = { overridesOnly = !overridesOnly }, label = { Text("Custom") })
                 FilterChip(selected = showSystemApps, onClick = { onShowSystemApps(!showSystemApps) }, label = { Text("System") })
             }
         }
@@ -1174,51 +1187,52 @@ private fun AppRuleCard(
                 .padding(MdSpacing.sm),
             verticalArrangement = Arrangement.spacedBy(MdSpacing.sm),
         ) {
-            Box(
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(min = 56.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(MdSpacing.sm),
             ) {
-                Row(
+                AppIcon(packageName = appRule.app.packageName, label = appRule.app.label, modifier = Modifier.size(40.dp))
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(end = if (appRule.channels.isNotEmpty()) 48.dp else 0.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(MdSpacing.sm),
+                        .weight(1f, fill = true),
                 ) {
-                    AppIcon(packageName = appRule.app.packageName, label = appRule.app.label, modifier = Modifier.size(40.dp))
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .widthIn(min = 96.dp),
-                    ) {
-                        Text(
-                            appRule.app.label,
-                            style = MaterialTheme.typography.titleMedium,
-                            maxLines = 1,
-                            softWrap = false,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Text(
-                            appRule.summaryLine(),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            softWrap = false,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
+                    Text(
+                        appRule.app.label,
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        appRule.summaryLine(),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(MdSpacing.sm),
+            ) {
+                Box(Modifier.weight(1f, fill = true)) {
+                    DeliveryModeSelector(appRule.app.mode) { onSetAppMode(appRule.app, it) }
                 }
                 if (appRule.channels.isNotEmpty()) {
                     IconButton(
-                        modifier = Modifier.align(Alignment.CenterEnd),
                         onClick = { expanded = !expanded },
                     ) {
                         Icon(if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore, contentDescription = "Channels")
                     }
                 }
             }
-            DeliveryModeSelector(appRule.app.mode) { onSetAppMode(appRule.app, it) }
             AnimatedVisibility(visible = expanded) {
                 Column(verticalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
                     appRule.channels.forEach { channel ->
@@ -1361,7 +1375,7 @@ private fun BatchScheduleCard(
                 )
             }
             Row(horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs), verticalAlignment = Alignment.CenterVertically) {
-                FilledTonalButton(onClick = { expanded = !expanded }) { Text(if (expanded) "Hide days" else "Edit days") }
+                FilledTonalButton(onClick = { expanded = !expanded }) { Text(if (expanded) "Hide days" else "Show days") }
                 AnimatedVisibility(visible = schedule.id > 0) {
                     IconButton(onClick = { onDelete(schedule.id) }) {
                         Icon(Icons.Filled.Delete, contentDescription = "Delete batch")
@@ -1425,7 +1439,7 @@ private fun TimeField(label: String, minutes: Int, modifier: Modifier = Modifier
 @Composable
 private fun WeekdaySelector(activeDaysMask: Int, onChanged: (Int) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
-        Text("Batch on days", style = MaterialTheme.typography.titleMedium)
+        Text("Active days", style = MaterialTheme.typography.titleMedium)
         Row(horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
             DayOfWeek.entries.forEach { day ->
                 val bit = 1 shl (day.value - 1)
@@ -1446,7 +1460,7 @@ private fun WeekdaySelector(activeDaysMask: Int, onChanged: (Int) -> Unit) {
             }
         }
         Text(
-            "Turn off a day to keep notifications instant on that day.",
+            "On disabled days, notifications are delivered immediately instead of batched.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -1515,11 +1529,11 @@ private fun SettingsScreen(
         item { SwitchRow("Show system apps", "Include system apps in Rules.", showSystemApps, onShowSystemApps) }
         item {
             SwitchRow(
-                title = "Monet colors",
+                title = "Wallpaper colors",
                 body = if (monetAvailable) {
-                    "Match the app to your Android wallpaper colors."
+                    "Match the app theme to your Android wallpaper colors."
                 } else {
-                    "Available on Android 12 and newer. This device uses the fallback theme."
+                    "Available on Android 12 and newer. This device uses the default purple theme."
                 },
                 checked = dynamicColor && monetAvailable,
                 enabled = monetAvailable,
@@ -1542,7 +1556,7 @@ private fun RetentionCard(retentionDays: Int, onRetentionDays: (Int) -> Unit, on
     var expanded by remember { mutableStateOf(false) }
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow), shape = MaterialTheme.shapes.medium) {
         Column(Modifier.padding(MdSpacing.sm), verticalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
-            Text("Delete notification records older than", style = MaterialTheme.typography.titleMedium)
+            Text("Auto-clear history older than", style = MaterialTheme.typography.titleMedium)
             Text(retentionLabel(retentionDays), color = MaterialTheme.colorScheme.onSurfaceVariant)
             Box {
                 FilledTonalButton(onClick = { expanded = true }) { Text("Change retention") }
@@ -1640,8 +1654,23 @@ private fun OnboardingScreen(onComplete: () -> Unit) {
             )
         }
         item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+                shape = MaterialTheme.shapes.medium,
+            ) {
+                Column(Modifier.padding(MdSpacing.sm), verticalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
+                    Text("One more thing", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Head to the Rules tab after setup to choose which apps batch their notifications. Apps default to batching — you can switch any of them to instant.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    )
+                }
+            }
+        }
+        item {
             Button(onClick = onComplete, modifier = Modifier.fillMaxWidth()) {
-                Text("Start managing notifications")
+                Text("Go to inbox")
             }
         }
     }
@@ -1665,9 +1694,17 @@ private fun PermissionCard(
                 Text(title, style = MaterialTheme.typography.titleMedium)
                 Text(body, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(MdSpacing.xs))
-                AssistChip(onClick = {}, label = { Text(if (ready) "Ready" else "Needs setup") })
+                AssistChip(
+                    onClick = {},
+                    label = { Text(if (ready) "Ready" else "Needs setup") },
+                    leadingIcon = if (ready) {
+                        { Icon(Icons.Filled.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                    } else null,
+                )
             }
-            Button(onClick = onClick, enabled = !ready) { Text(action) }
+            if (!ready) {
+                Button(onClick = onClick) { Text(action) }
+            }
         }
     }
 }
@@ -1811,6 +1848,9 @@ private fun FlowerCanvas(modifier: Modifier, color: Color) {
 private fun PillTimeline(startMinutes: Int, endMinutes: Int) {
     val primary = MaterialTheme.colorScheme.primary
     val track = MaterialTheme.colorScheme.surfaceContainerHighest
+    val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val labelStyle = MaterialTheme.typography.labelSmall
+    Column(verticalArrangement = Arrangement.spacedBy(MdSpacing.xxs)) {
     Canvas(
         modifier = Modifier
             .fillMaxWidth()
@@ -1842,6 +1882,11 @@ private fun PillTimeline(startMinutes: Int, endMinutes: Int) {
                 cornerRadius = androidx.compose.ui.geometry.CornerRadius(corner, corner),
             )
         }
+    }
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(formatMinutes(startMinutes), style = labelStyle, color = labelColor)
+        Text(formatMinutes(endMinutes), style = labelStyle, color = labelColor)
+    }
     }
 }
 
