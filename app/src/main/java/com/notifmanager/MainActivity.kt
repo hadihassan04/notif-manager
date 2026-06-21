@@ -136,6 +136,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.notifmanager.core.Insights
 import com.notifmanager.core.InsightsCalculator
+import com.notifmanager.core.ScheduleCalculator
 import com.notifmanager.data.AppRuleUi
 import com.notifmanager.data.AppSettings
 import com.notifmanager.data.ChannelRuleUi
@@ -437,9 +438,11 @@ private fun NotifManagerApp(viewModel: MainViewModel, initialBatchId: String?) {
                     composable(Destination.Inbox.route) {
                         val inbox by viewModel.inbox.collectAsStateWithLifecycle()
                         val notifications by viewModel.history.collectAsStateWithLifecycle()
+                        val schedules by viewModel.schedules.collectAsStateWithLifecycle()
                         NotificationsScreen(
                             batches = inbox,
                             notifications = notifications,
+                            schedules = schedules,
                             snackbarHostState = snackbarHostState,
                             onOpenBatch = { navController.navigate("batch/$it") },
                             onArchiveBatch = viewModel::archiveBatch,
@@ -552,6 +555,7 @@ private fun navigateTopLevel(navController: NavHostController, route: String) {
 private fun NotificationsScreen(
     batches: List<InboxBatch>,
     notifications: List<NotificationEntity>,
+    schedules: List<ScheduleRuleEntity>,
     snackbarHostState: SnackbarHostState,
     onOpenBatch: (String) -> Unit,
     onArchiveBatch: (String) -> Unit,
@@ -585,9 +589,9 @@ private fun NotificationsScreen(
         contentPadding = PaddingValues(MdSpacing.sm),
         verticalArrangement = Arrangement.spacedBy(MdSpacing.sm),
     ) {
-        if (batches.isNotEmpty()) {
+        if (batches.isNotEmpty() || schedules.isNotEmpty()) {
             item {
-                NextBatchCard(batches = batches, nowMillis = nowMillis)
+                NextBatchCard(batches = batches, schedules = schedules, nowMillis = nowMillis)
             }
         }
 
@@ -747,10 +751,14 @@ private fun InboxOverviewCard(batches: List<InboxBatch>, insights: Insights) {
 }
 
 @Composable
-private fun NextBatchCard(batches: List<InboxBatch>, nowMillis: Long) {
-    val nextBatch = batches.filter { it.releaseAtMillis > nowMillis }.minByOrNull { it.releaseAtMillis }
+private fun NextBatchCard(batches: List<InboxBatch>, schedules: List<ScheduleRuleEntity>, nowMillis: Long) {
+    val nextBatchRelease = batches.filter { it.releaseAtMillis > nowMillis }.minByOrNull { it.releaseAtMillis }
+    val nextScheduleMillis = remember(schedules, nowMillis) {
+        ScheduleCalculator().nextReleases(nowMillis, schedules).minByOrNull { it.triggerAtMillis }?.triggerAtMillis
+    }
+    val nextReleaseMillis = nextBatchRelease?.releaseAtMillis ?: nextScheduleMillis ?: return
+    val remaining = nextReleaseMillis - nowMillis
     val totalHeld = batches.sumOf { it.notificationCount }
-    val remaining = if (nextBatch != null) nextBatch.releaseAtMillis - nowMillis else 0L
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -770,7 +778,7 @@ private fun NextBatchCard(batches: List<InboxBatch>, nowMillis: Long) {
                     color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
                 )
                 Text(
-                    if (nextBatch != null) formatCountdown(remaining) else "No upcoming batch",
+                    formatCountdown(remaining),
                     style = MaterialTheme.typography.headlineMedium,
                     color = MaterialTheme.colorScheme.primary,
                 )
