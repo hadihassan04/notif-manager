@@ -147,6 +147,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.DateFormat
 import java.time.DayOfWeek
@@ -301,6 +302,10 @@ class MainViewModel(
         }
     }
 
+    fun archiveHistory(keys: List<String>) {
+        viewModelScope.launch { keys.forEach { repository.archiveNotification(it) } }
+    }
+
     fun cleanupHistoryNow() {
         viewModelScope.launch { repository.cleanupHistory(historyRetentionDays.value) }
     }
@@ -420,17 +425,16 @@ private fun NotifManagerApp(viewModel: MainViewModel, initialBatchId: String?) {
                     composable(Destination.Inbox.route) {
                         val inbox by viewModel.inbox.collectAsStateWithLifecycle()
                         val notifications by viewModel.history.collectAsStateWithLifecycle()
-                        val insights by viewModel.insights.collectAsStateWithLifecycle()
                         NotificationsScreen(
                             batches = inbox,
                             notifications = notifications,
-                            insights = insights,
                             snackbarHostState = snackbarHostState,
                             onOpenBatch = { navController.navigate("batch/$it") },
                             onArchiveBatch = viewModel::archiveBatch,
                             onUnarchiveBatch = viewModel::unarchiveBatch,
                             onArchiveNotification = viewModel::archiveNotification,
                             onUnarchiveNotification = viewModel::unarchiveNotification,
+                            onArchiveHistory = viewModel::archiveHistory,
                             onMarkBatchRead = viewModel::markBatchRead,
                             onMarkNotificationRead = viewModel::markNotificationRead,
                         )
@@ -536,23 +540,30 @@ private fun navigateTopLevel(navController: NavHostController, route: String) {
 private fun NotificationsScreen(
     batches: List<InboxBatch>,
     notifications: List<NotificationEntity>,
-    insights: Insights,
     snackbarHostState: SnackbarHostState,
     onOpenBatch: (String) -> Unit,
     onArchiveBatch: (String) -> Unit,
     onUnarchiveBatch: (String) -> Unit,
     onArchiveNotification: (String) -> Unit,
     onUnarchiveNotification: (String) -> Unit,
+    onArchiveHistory: (List<String>) -> Unit,
     onMarkBatchRead: (String) -> Unit,
     onMarkNotificationRead: (String) -> Unit,
 ) {
     val expandedBatchIds = remember { mutableStateListOf<String>() }
     val scope = rememberCoroutineScope()
-    var viewMode by remember { mutableStateOf(NotificationViewMode.Inbox) }
     var query by remember { mutableStateOf("") }
-    var modeFilter by remember { mutableStateOf<DeliveryMode?>(null) }
-    val archivedCount = notifications.count { it.isArchived }
-    val heldCount = batches.sumOf { it.notificationCount }
+    var showArchived by remember { mutableStateOf(false) }
+
+    var nowMillis by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(60_000L)
+            nowMillis = System.currentTimeMillis()
+        }
+    }
+
+    val activeBatchIds = batches.map { it.batchId }.toSet()
     val visibleBatches = batches.filter { batch ->
         query.isBlank() ||
             batch.title.contains(query, ignoreCase = true) ||
@@ -560,16 +571,14 @@ private fun NotificationsScreen(
             batch.topApps.any { it.contains(query, ignoreCase = true) } ||
             batch.notifications.any { it.matches(query) }
     }
-    val filteredNotifications = notifications
+    val historyNotifications = notifications
+        .filter { !it.isArchived && (it.batchId == null || it.batchId !in activeBatchIds) }
         .filter { it.matches(query) }
-        .filter { modeFilter == null || it.deliveryMode == modeFilter }
-        .filter {
-            when (viewMode) {
-                NotificationViewMode.Inbox -> !it.isArchived
-                NotificationViewMode.All -> true
-                NotificationViewMode.Archived -> it.isArchived
-            }
-        }
+    val archivedNotifications = notifications
+        .filter { it.isArchived }
+        .filter { it.matches(query) }
+
+    val nextBatch = batches.filter { it.releaseAtMillis > nowMillis }.minByOrNull { it.releaseAtMillis }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -577,46 +586,24 @@ private fun NotificationsScreen(
         verticalArrangement = Arrangement.spacedBy(MdSpacing.sm),
     ) {
         item {
-            InboxOverviewCard(batches = batches, insights = insights)
-        }
-        item {
             SearchField(query, onQueryChange = { query = it }, placeholder = "Search notifications")
         }
-        item {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs),
-            ) {
-                FilterChip(
-                    selected = viewMode == NotificationViewMode.Inbox,
-                    onClick = { viewMode = NotificationViewMode.Inbox },
-                    label = { Text("Inbox ($heldCount)") },
-                )
-                FilterChip(
-                    selected = viewMode == NotificationViewMode.All,
-                    onClick = { viewMode = NotificationViewMode.All },
-                    label = { Text("All (${notifications.size})") },
-                )
-                FilterChip(
-                    selected = viewMode == NotificationViewMode.Archived,
-                    onClick = { viewMode = NotificationViewMode.Archived },
-                    label = { Text("Archived ($archivedCount)") },
-                )
-            }
-        }
-        if (viewMode == NotificationViewMode.Inbox) {
-            if (visibleBatches.isEmpty()) {
-                item {
-                    EmptyState(
-                        title = if (query.isBlank()) "You're all caught up" else "No results",
-                        body = if (query.isBlank()) {
-                            "Batched notifications appear here grouped by app, until their scheduled delivery window."
-                        } else {
-                            "Try a different search or switch to All."
-                        },
-                    )
+
+        if (visibleBatches.isNotEmpty()) {
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs),
+                ) {
+                    Text("Waiting", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (nextBatch != null) {
+                        Text(
+                            "· ${formatCountdown(nextBatch.releaseAtMillis - nowMillis)}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
                 }
             }
             items(visibleBatches, key = { it.batchId }) { batch ->
@@ -624,6 +611,7 @@ private fun NotificationsScreen(
                 BatchSummaryCard(
                     batch = batch,
                     expanded = expanded,
+                    isNext = batch.batchId == nextBatch?.batchId,
                     onToggle = {
                         if (expanded) expandedBatchIds.remove(batch.batchId) else expandedBatchIds.add(batch.batchId)
                     },
@@ -648,58 +636,74 @@ private fun NotificationsScreen(
                     onMarkNotificationRead = onMarkNotificationRead,
                 )
             }
-        } else {
-            item {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text("Mode:", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    FilterChip(selected = modeFilter == null, onClick = { modeFilter = null }, label = { Text("All") })
-                    FilterChip(selected = modeFilter == DeliveryMode.BATCH, onClick = { modeFilter = DeliveryMode.BATCH }, label = { Text("Batched") })
-                    FilterChip(selected = modeFilter == DeliveryMode.INSTANT, onClick = { modeFilter = DeliveryMode.INSTANT }, label = { Text("Instant") })
+        }
+
+        item {
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("History", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+                if (historyNotifications.isNotEmpty()) {
+                    TextButton(onClick = {
+                        val keys = notifications
+                            .filter { !it.isArchived && (it.batchId == null || it.batchId !in activeBatchIds) }
+                            .map { it.notificationKey }
+                        scope.launch {
+                            onArchiveHistory(keys)
+                            val result = snackbarHostState.showSnackbar("History cleared", "Undo")
+                            if (result.name == "ActionPerformed") keys.forEach { onUnarchiveNotification(it) }
+                        }
+                    }) { Text("Clear all") }
                 }
             }
+        }
+
+        if (historyNotifications.isEmpty()) {
             item {
-                Text(
-                    "${filteredNotifications.size} notifications",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                EmptyState(
+                    title = if (query.isBlank()) "Nothing here yet" else "No results",
+                    body = if (query.isBlank()) "Delivered notifications will appear here." else "Try a different search.",
                 )
             }
-            if (filteredNotifications.isEmpty()) {
-                item { EmptyState("No results", "Clear filters or wait for new captured notifications.") }
+        }
+
+        items(historyNotifications, key = { it.notificationKey }) { item ->
+            NotificationRow(
+                item = item,
+                archiveLabel = "Archive",
+                onArchive = {
+                    onArchiveNotification(item.notificationKey)
+                    scope.launch {
+                        val result = snackbarHostState.showSnackbar("Notification archived", "Undo")
+                        if (result.name == "ActionPerformed") onUnarchiveNotification(item.notificationKey)
+                    }
+                },
+                onRestore = null,
+                onMarkRead = { onMarkNotificationRead(item.notificationKey) },
+            )
+        }
+
+        if (archivedNotifications.isNotEmpty()) {
+            item {
+                FilledTonalButton(
+                    onClick = { showArchived = !showArchived },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(if (showArchived) "Hide archived" else "Archived (${archivedNotifications.size})")
+                }
             }
-            items(filteredNotifications, key = { it.notificationKey }) { item ->
+        }
+
+        if (showArchived) {
+            items(archivedNotifications, key = { "arc_${it.notificationKey}" }) { item ->
                 NotificationRow(
                     item = item,
-                    archiveLabel = if (item.isArchived) "Restore" else "Archive",
-                    onArchive = {
-                        if (item.isArchived) {
-                            onUnarchiveNotification(item.notificationKey)
-                        } else {
-                            onArchiveNotification(item.notificationKey)
-                            scope.launch {
-                                val result = snackbarHostState.showSnackbar("Notification archived", "Undo")
-                                if (result.name == "ActionPerformed") onUnarchiveNotification(item.notificationKey)
-                            }
-                        }
-                    },
-                    onRestore = null,
+                    archiveLabel = "Restore",
+                    onArchive = { onUnarchiveNotification(item.notificationKey) },
+                    onRestore = { onUnarchiveNotification(item.notificationKey) },
                     onMarkRead = { onMarkNotificationRead(item.notificationKey) },
                 )
             }
         }
     }
-}
-
-private enum class NotificationViewMode {
-    Inbox,
-    All,
-    Archived,
 }
 
 @Composable
@@ -779,6 +783,7 @@ private fun CompactStat(label: String, value: String, modifier: Modifier = Modif
 private fun BatchSummaryCard(
     batch: InboxBatch,
     expanded: Boolean,
+    isNext: Boolean = false,
     onToggle: () -> Unit,
     onOpenBatch: () -> Unit,
     onArchiveBatch: () -> Unit,
@@ -789,7 +794,9 @@ private fun BatchSummaryCard(
         modifier = Modifier
             .fillMaxWidth()
             .animateContentSize(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isNext) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerLow,
+        ),
         shape = MaterialTheme.shapes.large,
     ) {
         Column(
@@ -810,37 +817,35 @@ private fun BatchSummaryCard(
                         batch.summaryText,
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
+                        maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    Text(
-                        "${batch.releaseLabel} · newest ${formatTime(batch.newestAtMillis)}",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    if (batch.releaseLabel.isNotEmpty()) {
+                        Text(
+                            batch.releaseLabel,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
                 IconButton(onClick = onToggle) {
                     Icon(if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore, contentDescription = "Toggle batch")
                 }
             }
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 FilledTonalButton(onClick = onOpenBatch) {
-                    Text("Open batch")
+                    Text("Open")
                 }
-                Text(
-                    if (batch.unreadCount > 0) "${batch.unreadCount} unread" else "All read",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                TopAppIcons(batch.topApps)
+                if (batch.unreadCount > 0) {
+                    Text(
+                        "${batch.unreadCount} unread",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
             AnimatedVisibility(
                 visible = expanded,
@@ -1318,7 +1323,7 @@ private fun ScheduleScreen(
         item {
             ExpressiveStatusCard(
                 title = "Smart batching",
-                body = "Use time pickers to define when notifications are held and when the digest arrives.",
+                body = "Set when notifications are held and when they're delivered.",
                 icon = Icons.Filled.NotificationsActive,
             )
         }
@@ -1368,7 +1373,7 @@ private fun BatchScheduleCard(
                     onMinutes = { onUpdate(schedule.copy(holdStartMinutes = it)) },
                 )
                 TimeField(
-                    label = "Digest arrives",
+                    label = "Delivers at",
                     minutes = schedule.releaseMinutes,
                     modifier = Modifier.weight(1f),
                     onMinutes = { onUpdate(schedule.copy(releaseMinutes = it)) },
@@ -1500,8 +1505,8 @@ private fun SettingsScreen(
         }
         item {
             PermissionCard(
-                title = "Digest notifications",
-                body = "Required so Notif Manager can tell you when your inbox is ready.",
+                title = "Post notifications",
+                body = "Required so Notif Manager can notify you when held notifications are delivered.",
                 ready = canPost,
                 action = "Allow",
                 onClick = {
@@ -1514,7 +1519,7 @@ private fun SettingsScreen(
         item {
             PermissionCard(
                 title = "Exact timing",
-                body = "Allows delivery close to your configured release time.",
+                body = "Allows delivery close to your configured delivery time.",
                 ready = exactAlarmReady,
                 action = "Open settings",
                 onClick = {
@@ -1612,7 +1617,7 @@ private fun OnboardingScreen(onComplete: () -> Unit) {
         item {
             ExpressiveStatusCard(
                 title = "Batch the noise",
-                body = "Notif Manager holds low-priority notifications during quiet windows, then delivers a digest when you choose.",
+                body = "Notif Manager holds notifications during quiet windows and delivers them all at once when you choose.",
                 icon = Icons.Filled.NotificationsActive,
             )
         }
@@ -1627,8 +1632,8 @@ private fun OnboardingScreen(onComplete: () -> Unit) {
         }
         item {
             PermissionCard(
-                title = "2. Digest notifications",
-                body = "Lets the app notify you when a batch is ready.",
+                title = "2. Post notifications",
+                body = "Lets the app notify you when held notifications are delivered.",
                 ready = rememberCanPostNotifications(context),
                 action = "Allow",
                 onClick = {
@@ -1641,7 +1646,7 @@ private fun OnboardingScreen(onComplete: () -> Unit) {
         item {
             PermissionCard(
                 title = "3. Exact timing",
-                body = "Improves delivery accuracy for digest times.",
+                body = "Improves accuracy for scheduled delivery times.",
                 ready = rememberExactAlarmReady(context),
                 action = "Open settings",
                 onClick = {
@@ -2038,6 +2043,14 @@ private fun retentionLabel(days: Int): String {
         1 -> "1 day"
         else -> "$days days"
     }
+}
+
+private fun formatCountdown(remainingMillis: Long): String {
+    if (remainingMillis <= 0) return "delivering now"
+    val totalMinutes = (remainingMillis / 60_000).toInt()
+    val hours = totalMinutes / 60
+    val mins = totalMinutes % 60
+    return if (hours > 0) "in ${hours}h ${mins}m" else "in ${mins}m"
 }
 
 private fun formatMinutes(minutes: Int): String {

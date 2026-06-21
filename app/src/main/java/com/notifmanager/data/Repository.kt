@@ -28,6 +28,7 @@ data class InboxBatch(
     val notifications: List<NotificationEntity>,
     val topApps: List<String> = emptyList(),
     val newestAtMillis: Long = 0,
+    val releaseAtMillis: Long = 0,
     val notificationCount: Int = notifications.size,
     val unreadCount: Int = notifications.count { !it.isRead },
     val summaryText: String = "",
@@ -325,24 +326,34 @@ class Repository(
             .take(3)
             .map { it.key }
         val summaryApps = topApps.joinToString()
+        val releaseAtMillis = if (releaseMinutes != null) {
+            try {
+                val parts = date.split("-")
+                val cal = java.util.Calendar.getInstance()
+                cal.set(parts[0].toInt(), parts[1].toInt() - 1, parts[2].toInt(), releaseMinutes / 60, releaseMinutes % 60, 0)
+                cal.set(java.util.Calendar.MILLISECOND, 0)
+                cal.timeInMillis
+            } catch (e: Exception) { 0L }
+        } else 0L
         return InboxBatch(
             batchId = batchId,
             title = when {
                 batchId == "unbatched" -> "Unbatched"
-                scheduleName != null -> scheduleName + " · " + date
-                else -> "Batch " + date
+                scheduleName != null -> scheduleName
+                else -> "Batch"
             },
             notifications = sortedItems,
             topApps = topApps,
             newestAtMillis = sortedItems.maxOfOrNull { it.postedAtMillis } ?: 0L,
+            releaseAtMillis = releaseAtMillis,
             notificationCount = sortedItems.size,
             unreadCount = sortedItems.count { !it.isRead },
             summaryText = when {
-                summaryApps.isBlank() -> "${sortedItems.size} held notifications"
-                sortedItems.size == 1 -> "1 held from $summaryApps"
-                else -> "${sortedItems.size} held from $summaryApps"
+                summaryApps.isBlank() -> "${sortedItems.size} notifications"
+                sortedItems.size == 1 -> "1 from $summaryApps"
+                else -> "${sortedItems.size} from $summaryApps"
             },
-            releaseLabel = releaseMinutes?.let { "Digest at ${formatMinutes(it)}" } ?: "Digest pending",
+            releaseLabel = releaseMinutes?.let { "Delivers at ${formatMinutes(it)}" } ?: "",
         )
     }
 
