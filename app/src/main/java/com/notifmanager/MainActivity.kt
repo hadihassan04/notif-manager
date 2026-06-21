@@ -43,6 +43,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -107,12 +109,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -227,6 +232,11 @@ class MainViewModel(
         SharingStarted.WhileSubscribed(5_000),
         false,
     )
+    val installedApps: StateFlow<List<InstalledApp>> = repository.installedApps.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5_000),
+        emptyList(),
+    )
 
     init {
         viewModelScope.launch {
@@ -310,8 +320,9 @@ class MainViewModel(
         viewModelScope.launch { repository.cleanupHistory(historyRetentionDays.value) }
     }
 
-    fun completeOnboarding() {
+    fun completeOnboarding(instantApps: List<InstalledApp> = emptyList()) {
         viewModelScope.launch {
+            if (instantApps.isNotEmpty()) repository.bulkSetInstant(instantApps)
             settings.setOnboardingCompleted(true)
             settings.setSetupDismissedOnce(true)
         }
@@ -346,7 +357,8 @@ private enum class Destination(val route: String, val label: String, val icon: I
 private fun NotifManagerApp(viewModel: MainViewModel, initialBatchId: String?) {
     val onboardingCompleted by viewModel.onboardingCompleted.collectAsStateWithLifecycle()
     if (!onboardingCompleted) {
-        OnboardingScreen(viewModel::completeOnboarding)
+        val installedApps by viewModel.installedApps.collectAsStateWithLifecycle()
+        OnboardingScreen(installedApps, viewModel::completeOnboarding)
         return
     }
 
@@ -552,7 +564,6 @@ private fun NotificationsScreen(
 ) {
     val expandedBatchIds = remember { mutableStateListOf<String>() }
     val scope = rememberCoroutineScope()
-    var query by remember { mutableStateOf("") }
     var showArchived by remember { mutableStateOf(false) }
 
     var nowMillis by remember { mutableStateOf(System.currentTimeMillis()) }
@@ -564,20 +575,9 @@ private fun NotificationsScreen(
     }
 
     val activeBatchIds = batches.map { it.batchId }.toSet()
-    val visibleBatches = batches.filter { batch ->
-        query.isBlank() ||
-            batch.title.contains(query, ignoreCase = true) ||
-            batch.summaryText.contains(query, ignoreCase = true) ||
-            batch.topApps.any { it.contains(query, ignoreCase = true) } ||
-            batch.notifications.any { it.matches(query) }
-    }
     val historyNotifications = notifications
         .filter { !it.isArchived && (it.batchId == null || it.batchId !in activeBatchIds) }
-        .filter { it.matches(query) }
-    val archivedNotifications = notifications
-        .filter { it.isArchived }
-        .filter { it.matches(query) }
-
+    val archivedNotifications = notifications.filter { it.isArchived }
     val nextBatch = batches.filter { it.releaseAtMillis > nowMillis }.minByOrNull { it.releaseAtMillis }
 
     LazyColumn(
@@ -585,28 +585,17 @@ private fun NotificationsScreen(
         contentPadding = PaddingValues(MdSpacing.sm),
         verticalArrangement = Arrangement.spacedBy(MdSpacing.sm),
     ) {
-        item {
-            SearchField(query, onQueryChange = { query = it }, placeholder = "Search notifications")
+        if (batches.isNotEmpty()) {
+            item {
+                NextBatchCard(batches = batches, nowMillis = nowMillis)
+            }
         }
 
-        if (visibleBatches.isNotEmpty()) {
+        if (batches.isNotEmpty()) {
             item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs),
-                ) {
-                    Text("Waiting", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    if (nextBatch != null) {
-                        Text(
-                            "· ${formatCountdown(nextBatch.releaseAtMillis - nowMillis)}",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
-                    }
-                }
+                Text("Waiting", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            items(visibleBatches, key = { it.batchId }) { batch ->
+            items(batches, key = { it.batchId }) { batch ->
                 val expanded = batch.batchId in expandedBatchIds
                 BatchSummaryCard(
                     batch = batch,
@@ -659,8 +648,8 @@ private fun NotificationsScreen(
         if (historyNotifications.isEmpty()) {
             item {
                 EmptyState(
-                    title = if (query.isBlank()) "Nothing here yet" else "No results",
-                    body = if (query.isBlank()) "Delivered notifications will appear here." else "Try a different search.",
+                    title = "Nothing here yet",
+                    body = "Delivered notifications will appear here.",
                 )
             }
         }
@@ -752,6 +741,50 @@ private fun InboxOverviewCard(batches: List<InboxBatch>, insights: Insights) {
                 CompactStat("Next", nextDigest, Modifier.weight(1f))
                 CompactStat("Saved", insights.distractionsSaved.toString(), Modifier.weight(1f))
                 CompactStat("Top app", topApp, Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+@Composable
+private fun NextBatchCard(batches: List<InboxBatch>, nowMillis: Long) {
+    val nextBatch = batches.filter { it.releaseAtMillis > nowMillis }.minByOrNull { it.releaseAtMillis }
+    val totalHeld = batches.sumOf { it.notificationCount }
+    val remaining = if (nextBatch != null) nextBatch.releaseAtMillis - nowMillis else 0L
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+        shape = MaterialTheme.shapes.large,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(MdSpacing.sm),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "Next batch",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
+                )
+                Text(
+                    if (nextBatch != null) formatCountdown(remaining) else "No upcoming batch",
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+            Column(horizontalAlignment = Alignment.End) {
+                Text(
+                    "Held",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
+                )
+                Text(
+                    "$totalHeld",
+                    style = MaterialTheme.typography.headlineMedium,
+                )
             }
         }
     }
@@ -1310,6 +1343,61 @@ private fun ChannelModeMenu(value: DeliveryMode?, onValue: (DeliveryMode?) -> Un
 }
 
 @Composable
+private fun DayTimeline(schedules: List<ScheduleRuleEntity>) {
+    val primary = MaterialTheme.colorScheme.primary
+    val track = MaterialTheme.colorScheme.surfaceContainerHighest
+    val disabled = MaterialTheme.colorScheme.onSurfaceVariant
+    val needle = MaterialTheme.colorScheme.onSurface
+
+    val cal = java.util.Calendar.getInstance()
+    val nowMinutes = cal.get(java.util.Calendar.HOUR_OF_DAY) * 60 + cal.get(java.util.Calendar.MINUTE)
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(MdSpacing.xxs),
+    ) {
+        Canvas(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(44.dp),
+        ) {
+            val trackH = 4.dp.toPx()
+            val cy = size.height / 2f
+            val dotR = 10.dp.toPx()
+
+            drawRoundRect(
+                color = track,
+                topLeft = Offset(0f, cy - trackH / 2),
+                size = Size(size.width, trackH),
+                cornerRadius = CornerRadius(trackH / 2),
+            )
+
+            fun minutesToX(minutes: Int) = size.width * ((minutes - 360 + 1440) % 1440 / 1440f)
+
+            schedules.filter { it.isEnabled }.forEach { schedule ->
+                drawCircle(color = primary, radius = dotR, center = Offset(minutesToX(schedule.releaseMinutes), cy))
+            }
+            schedules.filter { !it.isEnabled }.forEach { schedule ->
+                drawCircle(color = disabled, radius = dotR, center = Offset(minutesToX(schedule.releaseMinutes), cy))
+            }
+
+            val nowX = minutesToX(nowMinutes)
+            drawLine(
+                color = needle.copy(alpha = 0.35f),
+                start = Offset(nowX, cy - dotR - 4.dp.toPx()),
+                end = Offset(nowX, cy + dotR + 4.dp.toPx()),
+                strokeWidth = 2.dp.toPx(),
+            )
+        }
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            listOf("6 AM", "12 PM", "6 PM", "12 AM", "6 AM").forEach { label ->
+                Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+@Composable
 private fun ScheduleScreen(
     schedules: List<ScheduleRuleEntity>,
     onUpdate: (ScheduleRuleEntity) -> Unit,
@@ -1321,14 +1409,10 @@ private fun ScheduleScreen(
         verticalArrangement = Arrangement.spacedBy(MdSpacing.sm),
     ) {
         item {
-            ExpressiveStatusCard(
-                title = "Smart batching",
-                body = "Set when notifications are held and when they're delivered.",
-                icon = Icons.Filled.NotificationsActive,
-            )
+            DayTimeline(schedules)
         }
         if (schedules.isEmpty()) {
-            item { EmptyState("No batches yet", "Tap + to add your first notification batch window.") }
+            item { EmptyState("No delivery times", "Tap + to add a time when notifications will be delivered.") }
         }
         items(schedules, key = { it.id }) { schedule ->
             BatchScheduleCard(schedule, onUpdate, onDelete)
@@ -1336,111 +1420,96 @@ private fun ScheduleScreen(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun BatchScheduleCard(
     schedule: ScheduleRuleEntity,
     onUpdate: (ScheduleRuleEntity) -> Unit,
     onDelete: (Long) -> Unit,
 ) {
-    var expanded by remember(schedule.id) { mutableStateOf(true) }
+    var showTimePicker by remember(schedule.id) { mutableStateOf(false) }
+    var expanded by remember(schedule.id) { mutableStateOf(false) }
+
     Card(
-        modifier = Modifier.animateContentSize(),
+        modifier = Modifier.fillMaxWidth().animateContentSize(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
         shape = MaterialTheme.shapes.large,
     ) {
-        Column(Modifier.padding(MdSpacing.sm), verticalArrangement = Arrangement.spacedBy(MdSpacing.sm)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(MdSpacing.sm)) {
-                FlowerBadge(count = if (schedule.isEnabled) 1 else 0)
+        Column(Modifier.padding(horizontal = MdSpacing.sm)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { expanded = !expanded }
+                    .padding(vertical = MdSpacing.sm),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Column(Modifier.weight(1f)) {
-                    Text(schedule.name, style = MaterialTheme.typography.titleLarge)
-                    Text("${formatMinutes(schedule.holdStartMinutes)} to ${formatMinutes(schedule.releaseMinutes)}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        formatMinutes(schedule.releaseMinutes),
+                        style = MaterialTheme.typography.displaySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Text(
+                        activeDaysSummary(schedule.activeDaysMask),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
-                Switch(checked = schedule.isEnabled, onCheckedChange = { onUpdate(schedule.copy(isEnabled = it)) })
-            }
-            TextField(
-                value = schedule.name,
-                onValueChange = { onUpdate(schedule.copy(name = it.ifBlank { "Batch" })) },
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("Batch name") },
-                singleLine = true,
-            )
-            PillTimeline(schedule.holdStartMinutes, schedule.releaseMinutes)
-            Row(horizontalArrangement = Arrangement.spacedBy(MdSpacing.sm), modifier = Modifier.fillMaxWidth()) {
-                TimeField(
-                    label = "Hold starts",
-                    minutes = schedule.holdStartMinutes,
-                    modifier = Modifier.weight(1f),
-                    onMinutes = { onUpdate(schedule.copy(holdStartMinutes = it)) },
+                Icon(
+                    if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                TimeField(
-                    label = "Delivers at",
-                    minutes = schedule.releaseMinutes,
-                    modifier = Modifier.weight(1f),
-                    onMinutes = { onUpdate(schedule.copy(releaseMinutes = it)) },
-                )
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs), verticalAlignment = Alignment.CenterVertically) {
-                FilledTonalButton(onClick = { expanded = !expanded }) { Text(if (expanded) "Hide days" else "Show days") }
-                AnimatedVisibility(visible = schedule.id > 0) {
-                    IconButton(onClick = { onDelete(schedule.id) }) {
-                        Icon(Icons.Filled.Delete, contentDescription = "Delete batch")
-                    }
-                }
             }
             AnimatedVisibility(
                 visible = expanded,
                 enter = fadeIn() + expandVertically(),
                 exit = fadeOut() + shrinkVertically(),
             ) {
-                WeekdaySelector(schedule.activeDaysMask) { mask ->
-                    onUpdate(schedule.copy(activeDaysMask = mask))
+                Column(Modifier.padding(bottom = MdSpacing.sm), verticalArrangement = Arrangement.spacedBy(MdSpacing.sm)) {
+                    OutlinedButton(onClick = { showTimePicker = true }, modifier = Modifier.fillMaxWidth()) {
+                        Text("Change time · ${formatMinutes(schedule.releaseMinutes)}")
+                    }
+                    WeekdaySelector(schedule.activeDaysMask) { mask ->
+                        onUpdate(schedule.copy(activeDaysMask = mask))
+                    }
+                    AnimatedVisibility(visible = schedule.id > 0) {
+                        TextButton(
+                            onClick = { onDelete(schedule.id) },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Icon(Icons.Filled.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.size(MdSpacing.xs))
+                            Text("Remove")
+                        }
+                    }
                 }
             }
         }
     }
-}
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun TimeField(label: String, minutes: Int, modifier: Modifier = Modifier, onMinutes: (Int) -> Unit) {
-    var open by remember { mutableStateOf(false) }
-    Card(
-        modifier = modifier
-            .heightIn(min = 96.dp)
-            .clickable { open = true },
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
-        shape = MaterialTheme.shapes.medium,
-    ) {
-        Column(Modifier.padding(MdSpacing.sm), verticalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
-            Text(label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(formatMinutes(minutes), style = MaterialTheme.typography.headlineSmall)
-        }
-    }
-    if (open) {
+    if (showTimePicker) {
         val state = rememberTimePickerState(
-            initialHour = minutes / 60,
-            initialMinute = minutes % 60,
+            initialHour = schedule.releaseMinutes / 60,
+            initialMinute = schedule.releaseMinutes % 60,
             is24Hour = false,
         )
         AlertDialog(
-            onDismissRequest = { open = false },
-            title = { Text(label) },
+            onDismissRequest = { showTimePicker = false },
+            title = { Text("Delivery time") },
             text = { TimePicker(state = state) },
             confirmButton = {
-                Button(
-                    onClick = {
-                        onMinutes(state.hour * 60 + state.minute)
-                        open = false
-                    },
-                ) {
-                    Text("Set time")
-                }
+                Button(onClick = {
+                    onUpdate(schedule.copy(releaseMinutes = state.hour * 60 + state.minute))
+                    showTimePicker = false
+                }) { Text("Set time") }
             },
-            dismissButton = { TextButton(onClick = { open = false }) { Text("Cancel") } },
+            dismissButton = { TextButton(onClick = { showTimePicker = false }) { Text("Cancel") } },
         )
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun WeekdaySelector(activeDaysMask: Int, onChanged: (Int) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
@@ -1606,25 +1675,162 @@ private fun SwitchRow(
 }
 
 @Composable
-private fun OnboardingScreen(onComplete: () -> Unit) {
+private fun OnboardingScreen(installedApps: List<InstalledApp>, onComplete: (List<InstalledApp>) -> Unit) {
     val context = LocalContext.current
     val notificationLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+    val selectedInstantPackages = remember { mutableStateListOf<String>() }
+    LaunchedEffect(installedApps) {
+        if (selectedInstantPackages.isEmpty()) {
+            installedApps.filter { it.isRecommendedInstantApp }.forEach {
+                selectedInstantPackages.add(it.packageName)
+            }
+        }
+    }
+    val nonSystemApps = installedApps
+        .filter { !it.isSystemApp }
+        .sortedWith(compareByDescending<InstalledApp> { it.isRecommendedInstantApp }.thenByDescending { it.isRecommendedHeavyApp }.thenBy { it.label })
+
+    val pageCount = if (nonSystemApps.isNotEmpty()) 3 else 2
+    val pagerState = rememberPagerState(pageCount = { pageCount })
+    val scope = rememberCoroutineScope()
+    val isLastPage = pagerState.currentPage == pageCount - 1
+
+    Column(Modifier.fillMaxSize()) {
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.weight(1f),
+        ) { page ->
+            when (page) {
+                0 -> OnboardingWelcomePage()
+                1 -> OnboardingPermissionsPage(
+                    context = context,
+                    onRequestPostNotifications = {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        }
+                    },
+                )
+                else -> OnboardingAppsPage(
+                    nonSystemApps = nonSystemApps,
+                    selectedInstantPackages = selectedInstantPackages,
+                )
+            }
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(MdSpacing.sm),
+            verticalArrangement = Arrangement.spacedBy(MdSpacing.sm),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                repeat(pageCount) { index ->
+                    val selected = pagerState.currentPage == index
+                    Box(
+                        modifier = Modifier
+                            .padding(horizontal = MdSpacing.xxs)
+                            .size(if (selected) 10.dp else 6.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (selected) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f),
+                            ),
+                    )
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs),
+            ) {
+                if (pagerState.currentPage > 0) {
+                    OutlinedButton(
+                        onClick = { scope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) } },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Back") }
+                }
+                Button(
+                    onClick = {
+                        if (isLastPage) {
+                            val instant = installedApps.filter { it.packageName in selectedInstantPackages }
+                            onComplete(instant)
+                        } else {
+                            scope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) }
+                        }
+                    },
+                    modifier = Modifier.weight(1f),
+                ) { Text(if (isLastPage) "Get started" else "Next") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun OnboardingWelcomePage() {
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            modifier = Modifier.padding(MdSpacing.lg),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(MdSpacing.sm),
+        ) {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier.size(140.dp),
+            ) {
+                FlowerCanvas(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                )
+                Icon(
+                    Icons.Filled.NotificationsActive,
+                    contentDescription = null,
+                    modifier = Modifier.size(52.dp),
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            }
+            Spacer(Modifier.height(MdSpacing.sm))
+            Text(
+                "Take back your attention",
+                style = MaterialTheme.typography.displaySmall,
+                textAlign = TextAlign.Center,
+            )
+            Text(
+                "Notif Manager holds distracting notifications and delivers them all at once when you're ready.",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
+        }
+    }
+}
+
+@Composable
+private fun OnboardingPermissionsPage(context: Context, onRequestPostNotifications: () -> Unit) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(MdSpacing.md),
         verticalArrangement = Arrangement.spacedBy(MdSpacing.sm),
     ) {
         item {
-            ExpressiveStatusCard(
-                title = "Batch the noise",
-                body = "Notif Manager holds notifications during quiet windows and delivers them all at once when you choose.",
-                icon = Icons.Filled.NotificationsActive,
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
+                Text("A few permissions", style = MaterialTheme.typography.headlineMedium)
+                Text(
+                    "These let the app capture, hold, and re-deliver your notifications.",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
         item {
             PermissionCard(
-                title = "1. Notification access",
-                body = "Lets the app capture and hide notifications that should wait.",
+                title = "Notification access",
+                body = "Required to capture and batch notifications from other apps.",
                 ready = rememberNotificationListenerEnabled(context),
                 action = "Open settings",
                 onClick = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) },
@@ -1632,20 +1838,16 @@ private fun OnboardingScreen(onComplete: () -> Unit) {
         }
         item {
             PermissionCard(
-                title = "2. Post notifications",
-                body = "Lets the app notify you when held notifications are delivered.",
+                title = "Post notifications",
+                body = "Required to notify you when held notifications are delivered.",
                 ready = rememberCanPostNotifications(context),
                 action = "Allow",
-                onClick = {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                    }
-                },
+                onClick = onRequestPostNotifications,
             )
         }
         item {
             PermissionCard(
-                title = "3. Exact timing",
+                title = "Exact timing",
                 body = "Improves accuracy for scheduled delivery times.",
                 ready = rememberExactAlarmReady(context),
                 action = "Open settings",
@@ -1658,25 +1860,100 @@ private fun OnboardingScreen(onComplete: () -> Unit) {
                 },
             )
         }
+    }
+}
+
+@Composable
+private fun OnboardingAppsPage(nonSystemApps: List<InstalledApp>, selectedInstantPackages: MutableList<String>) {
+    val instantCount = selectedInstantPackages.size
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(MdSpacing.md),
+        verticalArrangement = Arrangement.spacedBy(MdSpacing.xs),
+    ) {
         item {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
-                shape = MaterialTheme.shapes.medium,
+            Column(
+                verticalArrangement = Arrangement.spacedBy(MdSpacing.xs),
+                modifier = Modifier.padding(bottom = MdSpacing.xs),
             ) {
-                Column(Modifier.padding(MdSpacing.sm), verticalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
-                    Text("One more thing", style = MaterialTheme.typography.titleMedium)
+                Text("What needs to ring through?", style = MaterialTheme.typography.headlineMedium)
+                Text(
+                    "Selected apps bypass batching and notify you instantly. Everything else waits for your schedule.",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (instantCount > 0) {
                     Text(
-                        "Head to the Rules tab after setup to choose which apps batch their notifications. Apps default to batching — you can switch any of them to instant.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        "$instantCount app${if (instantCount == 1) "" else "s"} set to instant",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
                     )
                 }
             }
         }
-        item {
-            Button(onClick = onComplete, modifier = Modifier.fillMaxWidth()) {
-                Text("Go to inbox")
+        val recommended = nonSystemApps.filter { it.isRecommendedInstantApp }
+        val rest = nonSystemApps.filter { !it.isRecommendedInstantApp }
+        if (recommended.isNotEmpty()) {
+            item {
+                Text(
+                    "Recommended",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = MdSpacing.xs),
+                )
             }
+            items(recommended, key = { "rec_${it.packageName}" }) { app ->
+                OnboardingAppRow(app, selectedInstantPackages)
+            }
+        }
+        if (rest.isNotEmpty()) {
+            item {
+                Text(
+                    "All apps",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = MdSpacing.xs),
+                )
+            }
+            items(rest, key = { "all_${it.packageName}" }) { app ->
+                OnboardingAppRow(app, selectedInstantPackages)
+            }
+        }
+    }
+}
+
+@Composable
+private fun OnboardingAppRow(app: InstalledApp, selectedInstantPackages: MutableList<String>) {
+    val selected = app.packageName in selectedInstantPackages
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(MaterialTheme.shapes.medium)
+            .clickable {
+                if (selected) selectedInstantPackages.remove(app.packageName)
+                else selectedInstantPackages.add(app.packageName)
+            },
+        color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerLow,
+        shape = MaterialTheme.shapes.medium,
+    ) {
+        Row(
+            modifier = Modifier.padding(MdSpacing.xs),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(MdSpacing.sm),
+        ) {
+            AppIcon(packageName = app.packageName, label = app.label, modifier = Modifier.size(36.dp))
+            Column(Modifier.weight(1f)) {
+                Text(app.label, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    if (selected) "Instant · rings through" else "Batched · waits for schedule",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(checked = selected, onCheckedChange = {
+                if (selected) selectedInstantPackages.remove(app.packageName)
+                else selectedInstantPackages.add(app.packageName)
+            })
         }
     }
 }
@@ -1850,52 +2127,6 @@ private fun FlowerCanvas(modifier: Modifier, color: Color) {
 }
 
 @Composable
-private fun PillTimeline(startMinutes: Int, endMinutes: Int) {
-    val primary = MaterialTheme.colorScheme.primary
-    val track = MaterialTheme.colorScheme.surfaceContainerHighest
-    val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
-    val labelStyle = MaterialTheme.typography.labelSmall
-    Column(verticalArrangement = Arrangement.spacedBy(MdSpacing.xxs)) {
-    Canvas(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(28.dp),
-    ) {
-        val corner = size.height / 2f
-        drawRoundRect(color = track, cornerRadius = androidx.compose.ui.geometry.CornerRadius(corner, corner))
-        fun xFor(minutes: Int): Float = size.width * (minutes.coerceIn(0, 1439) / 1439f)
-        val start = xFor(startMinutes)
-        val end = xFor(endMinutes)
-        if (start <= end) {
-            drawRoundRect(
-                color = primary,
-                topLeft = Offset(start, 0f),
-                size = androidx.compose.ui.geometry.Size(end - start, size.height),
-                cornerRadius = androidx.compose.ui.geometry.CornerRadius(corner, corner),
-            )
-        } else {
-            drawRoundRect(
-                color = primary,
-                topLeft = Offset(0f, 0f),
-                size = androidx.compose.ui.geometry.Size(end, size.height),
-                cornerRadius = androidx.compose.ui.geometry.CornerRadius(corner, corner),
-            )
-            drawRoundRect(
-                color = primary,
-                topLeft = Offset(start, 0f),
-                size = androidx.compose.ui.geometry.Size(size.width - start, size.height),
-                cornerRadius = androidx.compose.ui.geometry.CornerRadius(corner, corner),
-            )
-        }
-    }
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(formatMinutes(startMinutes), style = labelStyle, color = labelColor)
-        Text(formatMinutes(endMinutes), style = labelStyle, color = labelColor)
-    }
-    }
-}
-
-@Composable
 private fun TopAppIcons(apps: List<String>, modifier: Modifier = Modifier) {
     if (apps.isEmpty()) return
     Row(
@@ -2043,6 +2274,14 @@ private fun retentionLabel(days: Int): String {
         1 -> "1 day"
         else -> "$days days"
     }
+}
+
+private fun activeDaysSummary(mask: Int): String {
+    if (mask == ScheduleRuleEntity.ALL_DAYS_MASK) return "Every day"
+    if (mask == 0) return "No active days"
+    return DayOfWeek.entries
+        .filter { mask and (1 shl (it.value - 1)) != 0 }
+        .joinToString(" · ") { it.name.take(3).lowercase().replaceFirstChar { c -> c.uppercase() } }
 }
 
 private fun formatCountdown(remainingMillis: Long): String {

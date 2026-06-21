@@ -20,6 +20,7 @@ data class InstalledApp(
     val isSystemApp: Boolean,
     val notificationCount: Int,
     val isRecommendedHeavyApp: Boolean,
+    val isRecommendedInstantApp: Boolean = false,
 )
 
 data class InboxBatch(
@@ -172,15 +173,28 @@ class Repository(
         dao.deleteChannelRule(packageName, channelId)
     }
 
+    suspend fun bulkSetInstant(apps: List<InstalledApp>) {
+        apps.forEach { app ->
+            dao.upsertAppRule(
+                AppRuleEntity(
+                    packageName = app.packageName,
+                    appLabel = app.label,
+                    deliveryMode = DeliveryMode.INSTANT,
+                    updatedAtMillis = System.currentTimeMillis(),
+                )
+            )
+        }
+    }
+
     suspend fun addSchedule() {
-        val existing = ensureSchedules()
-        val nextNumber = existing.size + 1
+        ensureSchedules()
         dao.upsertSchedule(
-            defaultSchedule().copy(
-                name = "Batch $nextNumber",
-                holdStartMinutes = ((9 + nextNumber) % 24) * 60,
-                releaseMinutes = ((12 + nextNumber) % 24) * 60,
-            ),
+            ScheduleRuleEntity(
+                name = "New time",
+                holdStartMinutes = 7 * 60,
+                releaseMinutes = 12 * 60,
+                updatedAtMillis = System.currentTimeMillis(),
+            )
         )
         reschedule()
     }
@@ -272,6 +286,7 @@ class Repository(
                     isSystemApp = it.isSystemApp(),
                     notificationCount = notificationCounts[it.packageName] ?: 0,
                     isRecommendedHeavyApp = isRecommendedHeavyApp(it.packageName, label),
+                    isRecommendedInstantApp = isRecommendedInstantApp(it.packageName, label),
                 )
             }
             .plus(
@@ -357,15 +372,15 @@ class Repository(
         )
     }
 
-    private fun defaultSchedule(): ScheduleRuleEntity {
-        return ScheduleRuleEntity(updatedAtMillis = System.currentTimeMillis())
-    }
-
     private suspend fun ensureSchedules(): List<ScheduleRuleEntity> {
         val existing = dao.schedules()
         if (existing.isNotEmpty()) return existing
-        val id = dao.upsertSchedule(defaultSchedule())
-        return listOf(defaultSchedule().copy(id = id))
+        listOf(
+            ScheduleRuleEntity(name = "Morning", holdStartMinutes = 22 * 60, releaseMinutes = 7 * 60, updatedAtMillis = System.currentTimeMillis()),
+            ScheduleRuleEntity(name = "Evening", holdStartMinutes = 7 * 60, releaseMinutes = 17 * 60, updatedAtMillis = System.currentTimeMillis()),
+            ScheduleRuleEntity(name = "Night", holdStartMinutes = 17 * 60, releaseMinutes = 22 * 60, updatedAtMillis = System.currentTimeMillis()),
+        ).forEach { dao.upsertSchedule(it) }
+        return dao.schedules()
     }
 
     private fun scheduleIdFromBatchId(batchId: String): Long? {
@@ -381,6 +396,11 @@ class Repository(
     private fun isRecommendedHeavyApp(packageName: String, label: String): Boolean {
         val haystack = (packageName + " " + label).lowercase()
         return RECOMMENDED_HEAVY_APP_HINTS.any { haystack.contains(it) }
+    }
+
+    private fun isRecommendedInstantApp(packageName: String, label: String): Boolean {
+        val haystack = (packageName + " " + label).lowercase()
+        return RECOMMENDED_INSTANT_HINTS.any { haystack.contains(it) }
     }
 
     private fun formatMinutes(minutes: Int): String {
@@ -412,6 +432,25 @@ class Repository(
             "reddit",
             "youtube",
             "outlook",
+        )
+
+        private val RECOMMENDED_INSTANT_HINTS = listOf(
+            // Communication — phone, SMS, messaging
+            "com.android.phone", "com.android.dialer", "com.google.android.dialer",
+            "com.android.mms", "com.google.android.apps.messaging", "com.samsung.android.messaging",
+            "phone", "dialer", "messaging", "messages", "sms", "mms",
+            // Email
+            "mail", "email", "gmail", "outlook", "yahoo",
+            // Banking & payments
+            "bank", "chase", "wellsfargo", "citibank", "amex", "paypal", "venmo", "cashapp",
+            // Navigation & rides
+            "maps", "waze", "navigation", "uber", "lyft",
+            // Food delivery
+            "doordash", "grubhub", "ubereats", "postmates",
+            // Time-sensitive system
+            "calendar", "alarm", "clock",
+            // Security
+            "authenticator", "2fa",
         )
     }
 }
