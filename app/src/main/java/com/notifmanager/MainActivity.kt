@@ -1731,7 +1731,7 @@ private fun ScheduleScreen(
             item {
                 Text("Instant windows", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            items(instantWindows, key = { it.id }) { window ->
+            items(instantWindows, key = { "instant_${it.id}" }) { window ->
                 InstantWindowCard(
                     window = window,
                     onUpdate = onUpdateInstantWindow,
@@ -1745,7 +1745,7 @@ private fun ScheduleScreen(
         if (schedules.isEmpty()) {
             item { EmptyState("No delivery times", "Tap + to add a time when notifications will be delivered.") }
         }
-        items(schedules, key = { it.id }) { schedule ->
+        items(schedules, key = { "schedule_${it.id}" }) { schedule ->
             BatchScheduleCard(schedule, onUpdate, onDelete)
         }
     }
