@@ -79,3 +79,12 @@ data class ScheduleRuleEntity(
         const val ALL_DAYS_MASK = 0b1111111
     }
 }
+
+@Entity(tableName = "instant_windows")
+data class InstantWindowEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val isEnabled: Boolean = true,
+    val startMinutes: Int = 17 * 60,
+    val endMinutes: Int = 0,
+    val updatedAtMillis: Long,
+)

@@ -27,6 +27,10 @@ class AppSettings(private val context: Context) {
         prefs[ONBOARDING_COMPLETED] ?: false
     }
 
+    val pauseBatching: Flow<Boolean> = context.settingsDataStore.data.map { prefs ->
+        prefs[PAUSE_BATCHING] ?: false
+    }
+
     val setupDismissedOnce: Flow<Boolean> = context.settingsDataStore.data.map { prefs ->
         prefs[SETUP_DISMISSED_ONCE] ?: false
     }
@@ -55,6 +59,12 @@ class AppSettings(private val context: Context) {
         }
     }
 
+    suspend fun setPauseBatching(paused: Boolean) {
+        context.settingsDataStore.edit { prefs ->
+            prefs[PAUSE_BATCHING] = paused
+        }
+    }
+
     suspend fun setSetupDismissedOnce(dismissed: Boolean) {
         context.settingsDataStore.edit { prefs ->
             prefs[SETUP_DISMISSED_ONCE] = dismissed
@@ -69,6 +79,7 @@ class AppSettings(private val context: Context) {
         val SHOW_SYSTEM_APPS = booleanPreferencesKey("show_system_apps")
         val HISTORY_RETENTION_DAYS = intPreferencesKey("history_retention_days")
         val ONBOARDING_COMPLETED = booleanPreferencesKey("onboarding_completed")
+        val PAUSE_BATCHING = booleanPreferencesKey("pause_batching")
         val SETUP_DISMISSED_ONCE = booleanPreferencesKey("setup_dismissed_once")
     }
 }

@@ -8,5 +8,5 @@ import com.notifmanager.data.Repository
 class NotifManagerApp : Application() {
     val database by lazy { AppDatabase.get(this) }
     val settings by lazy { AppSettings(this) }
-    val repository by lazy { Repository(this, database.dao()) }
+    val repository by lazy { Repository(this, database.dao(), settings) }
 }

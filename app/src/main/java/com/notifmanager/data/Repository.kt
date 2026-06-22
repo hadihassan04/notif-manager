@@ -12,6 +12,9 @@ import com.notifmanager.core.ScheduleCalculator
 import com.notifmanager.notifications.BatchScheduler
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
+import java.time.Instant
+import java.time.ZoneId
 
 data class InstalledApp(
     val packageName: String,
@@ -52,6 +55,7 @@ data class AppRuleUi(
 class Repository(
     private val context: Context,
     private val dao: AppDao,
+    private val settings: AppSettings,
 ) {
     private val ruleEngine = RuleEngine()
     private val insightsCalculator = InsightsCalculator()
@@ -61,6 +65,7 @@ class Repository(
 
     val allNotifications: Flow<List<NotificationEntity>> = dao.observeAllNotifications()
     val schedules: Flow<List<ScheduleRuleEntity>> = dao.observeSchedules()
+    val instantWindows: Flow<List<InstantWindowEntity>> = dao.observeInstantWindows()
 
     val insights: Flow<Insights> = dao.observeAllNotifications().combine(dao.observeSchedules()) { notifications, _ ->
         insightsCalculator.calculate(notifications)
@@ -117,12 +122,17 @@ class Repository(
 
     suspend fun capture(incoming: IncomingNotification): NotificationEntity {
         val schedules = ensureSchedules()
-        val decision = ruleEngine.decide(
-            incoming = incoming,
-            schedules = schedules,
-            appRules = dao.appRules(),
-            channelRules = dao.channelRules(),
-        )
+        val instantOverride = settings.pauseBatching.first() || isInsideInstantWindow(incoming.postedAtMillis, dao.instantWindows())
+        val decision = if (instantOverride) {
+            null
+        } else {
+            ruleEngine.decide(
+                incoming = incoming,
+                schedules = schedules,
+                appRules = dao.appRules(),
+                channelRules = dao.channelRules(),
+            )
+        }
         val entity = NotificationEntity(
             notificationKey = incoming.notificationKey,
             packageName = incoming.packageName,
@@ -132,9 +142,9 @@ class Repository(
             channelId = incoming.channelId,
             category = incoming.category,
             postedAtMillis = incoming.postedAtMillis,
-            batchId = decision.batchId,
-            deliveryMode = decision.deliveryMode,
-            ruleSource = decision.ruleSource,
+            batchId = decision?.batchId,
+            deliveryMode = decision?.deliveryMode ?: DeliveryMode.INSTANT,
+            ruleSource = decision?.ruleSource ?: RuleSource.SCHEDULE_INACTIVE,
         )
         dao.upsertNotification(entity)
         ensureAppRule(incoming.packageName, incoming.appLabel)
@@ -190,7 +200,7 @@ class Repository(
         ensureSchedules()
         dao.upsertSchedule(
             ScheduleRuleEntity(
-                name = "New time",
+                name = "",
                 holdStartMinutes = 7 * 60,
                 releaseMinutes = 12 * 60,
                 updatedAtMillis = System.currentTimeMillis(),
@@ -208,6 +218,24 @@ class Repository(
         dao.deleteSchedule(id)
         ensureSchedules()
         reschedule()
+    }
+
+    suspend fun addInstantWindow() {
+        dao.upsertInstantWindow(
+            InstantWindowEntity(
+                startMinutes = 17 * 60,
+                endMinutes = 0,
+                updatedAtMillis = System.currentTimeMillis(),
+            ),
+        )
+    }
+
+    suspend fun updateInstantWindow(window: InstantWindowEntity) {
+        dao.upsertInstantWindow(window.copy(updatedAtMillis = System.currentTimeMillis()))
+    }
+
+    suspend fun deleteInstantWindow(id: Long) {
+        dao.deleteInstantWindow(id)
     }
 
     suspend fun archiveNotification(key: String) = dao.archiveNotification(key)
@@ -330,7 +358,6 @@ class Repository(
         schedulesById: Map<Long, ScheduleRuleEntity>,
     ): InboxBatch {
         val sortedItems = items.sortedByDescending { it.postedAtMillis }
-        val scheduleName = scheduleIdFromBatchId(batchId)?.let { schedulesById[it]?.name }
         val date = batchId.substringBefore("-batch-")
         val releaseMinutes = batchId.substringAfterLast("-", missingDelimiterValue = "").toIntOrNull()
         val topApps = sortedItems
@@ -354,7 +381,7 @@ class Repository(
             batchId = batchId,
             title = when {
                 batchId == "unbatched" -> "Unbatched"
-                scheduleName != null -> scheduleName
+                releaseMinutes != null -> "${formatMinutes(releaseMinutes)} batch"
                 else -> "Batch"
             },
             notifications = sortedItems,
@@ -376,9 +403,9 @@ class Repository(
         val existing = dao.schedules()
         if (existing.isNotEmpty()) return existing
         listOf(
-            ScheduleRuleEntity(name = "Morning", holdStartMinutes = 22 * 60, releaseMinutes = 7 * 60, updatedAtMillis = System.currentTimeMillis()),
-            ScheduleRuleEntity(name = "Evening", holdStartMinutes = 7 * 60, releaseMinutes = 17 * 60, updatedAtMillis = System.currentTimeMillis()),
-            ScheduleRuleEntity(name = "Night", holdStartMinutes = 17 * 60, releaseMinutes = 22 * 60, updatedAtMillis = System.currentTimeMillis()),
+            ScheduleRuleEntity(name = "", holdStartMinutes = 22 * 60, releaseMinutes = 7 * 60, updatedAtMillis = System.currentTimeMillis()),
+            ScheduleRuleEntity(name = "", holdStartMinutes = 7 * 60, releaseMinutes = 17 * 60, updatedAtMillis = System.currentTimeMillis()),
+            ScheduleRuleEntity(name = "", holdStartMinutes = 17 * 60, releaseMinutes = 22 * 60, updatedAtMillis = System.currentTimeMillis()),
         ).forEach { dao.upsertSchedule(it) }
         return dao.schedules()
     }
@@ -412,6 +439,22 @@ class Repository(
             else -> value
         }
         return "$hour12:${"%02d".format(minute)} $suffix"
+    }
+
+    private fun isInsideInstantWindow(epochMillis: Long, windows: List<InstantWindowEntity>): Boolean {
+        val minute = Instant.ofEpochMilli(epochMillis)
+            .atZone(ZoneId.systemDefault())
+            .toLocalTime()
+            .toSecondOfDay() / 60
+        return windows.any { window ->
+            if (!window.isEnabled || window.startMinutes == window.endMinutes) {
+                false
+            } else if (window.startMinutes < window.endMinutes) {
+                minute in window.startMinutes until window.endMinutes
+            } else {
+                minute >= window.startMinutes || minute < window.endMinutes
+            }
+        }
     }
 
     companion object {

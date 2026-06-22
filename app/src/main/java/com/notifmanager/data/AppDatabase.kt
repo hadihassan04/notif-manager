@@ -12,8 +12,9 @@ import androidx.room.TypeConverters
         AppRuleEntity::class,
         ChannelRuleEntity::class,
         ScheduleRuleEntity::class,
+        InstantWindowEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)

@@ -94,4 +94,16 @@ interface AppDao {
 
     @Query("DELETE FROM schedule_rules WHERE id = :id")
     suspend fun deleteSchedule(id: Long)
+
+    @Query("SELECT * FROM instant_windows ORDER BY startMinutes, endMinutes")
+    fun observeInstantWindows(): Flow<List<InstantWindowEntity>>
+
+    @Query("SELECT * FROM instant_windows ORDER BY startMinutes, endMinutes")
+    suspend fun instantWindows(): List<InstantWindowEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertInstantWindow(window: InstantWindowEntity): Long
+
+    @Query("DELETE FROM instant_windows WHERE id = :id")
+    suspend fun deleteInstantWindow(id: Long)
 }
