@@ -5,7 +5,6 @@ import android.app.AlarmManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -103,8 +102,10 @@ import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -115,6 +116,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -124,6 +126,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.drawable.toBitmap
+import androidx.core.net.toUri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -152,15 +155,18 @@ import com.notifmanager.data.ScheduleRuleEntity
 import com.notifmanager.notifications.PendingIntentRegistry
 import com.notifmanager.ui.theme.MdSpacing
 import com.notifmanager.ui.theme.NotifManagerTheme
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.DateFormat
 import java.time.DayOfWeek
 import java.util.Date
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
@@ -327,6 +333,14 @@ class MainViewModel(
         viewModelScope.launch { repository.unarchiveNotification(key) }
     }
 
+    fun archiveNotifications(keys: List<String>) {
+        viewModelScope.launch { repository.archiveNotifications(keys) }
+    }
+
+    fun unarchiveNotifications(keys: List<String>) {
+        viewModelScope.launch { repository.unarchiveNotifications(keys) }
+    }
+
     fun setShowSystemApps(enabled: Boolean) {
         viewModelScope.launch { settings.setShowSystemApps(enabled) }
     }
@@ -347,7 +361,7 @@ class MainViewModel(
     }
 
     fun archiveHistory(keys: List<String>) {
-        viewModelScope.launch { keys.forEach { repository.archiveNotification(it) } }
+        archiveNotifications(keys)
     }
 
     fun cleanupHistoryNow() {
@@ -501,10 +515,8 @@ private fun NotifManagerApp(
                             schedules = schedules,
                             snackbarHostState = snackbarHostState,
                             onOpenBatch = { navController.navigate("batch/$it") },
-                            onArchiveBatch = viewModel::archiveBatch,
-                            onUnarchiveBatch = viewModel::unarchiveBatch,
-                            onArchiveNotification = viewModel::archiveNotification,
-                            onUnarchiveNotification = viewModel::unarchiveNotification,
+                            onArchiveNotifications = viewModel::archiveNotifications,
+                            onUnarchiveNotifications = viewModel::unarchiveNotifications,
                             onArchiveHistory = viewModel::archiveHistory,
                         )
                     }
@@ -560,10 +572,8 @@ private fun NotifManagerApp(
                             batch = batch,
                             batchId = batchId,
                             snackbarHostState = snackbarHostState,
-                            onArchiveBatch = viewModel::archiveBatch,
-                            onUnarchiveBatch = viewModel::unarchiveBatch,
-                            onArchiveNotification = viewModel::archiveNotification,
-                            onUnarchiveNotification = viewModel::unarchiveNotification,
+                            onArchiveNotifications = viewModel::archiveNotifications,
+                            onUnarchiveNotifications = viewModel::unarchiveNotifications,
                         )
                     }
                 }
@@ -712,6 +722,10 @@ private data class NotificationGroup(
         .ifBlank { null }
 }
 
+private fun InboxBatch.notificationKeys(): List<String> {
+    return notifications.map { it.notificationKey }
+}
+
 @Composable
 private fun NotificationsScreen(
     batches: List<InboxBatch>,
@@ -719,17 +733,15 @@ private fun NotificationsScreen(
     schedules: List<ScheduleRuleEntity>,
     snackbarHostState: SnackbarHostState,
     onOpenBatch: (String) -> Unit,
-    onArchiveBatch: (String) -> Unit,
-    onUnarchiveBatch: (String) -> Unit,
-    onArchiveNotification: (String) -> Unit,
-    onUnarchiveNotification: (String) -> Unit,
+    onArchiveNotifications: (List<String>) -> Unit,
+    onUnarchiveNotifications: (List<String>) -> Unit,
     onArchiveHistory: (List<String>) -> Unit,
 ) {
     val expandedBatchIds = remember { mutableStateListOf<String>() }
     val scope = rememberCoroutineScope()
     var showArchived by remember { mutableStateOf(false) }
 
-    var nowMillis by remember { mutableStateOf(System.currentTimeMillis()) }
+    var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) {
         while (true) {
             delay(60_000L)
@@ -737,19 +749,29 @@ private fun NotificationsScreen(
         }
     }
 
-    val waitingBatch = batches
-        .filter { it.releaseAtMillis > nowMillis }
-        .minByOrNull { it.releaseAtMillis }
-    val deliveredBatches = batches
-        .filter { it.releaseAtMillis in 1..nowMillis }
-    val currentDeliveredBatch = deliveredBatches.maxByOrNull { it.releaseAtMillis }
-    val historyBatchIds = deliveredBatches
-        .filter { it.batchId != currentDeliveredBatch?.batchId }
-        .map { it.batchId }
-        .toSet()
-    val historyNotifications = notifications
-        .filter { !it.isArchived && (it.batchId == null || it.batchId in historyBatchIds) }
-    val archivedNotifications = notifications.filter { it.isArchived }
+    val waitingBatch = remember(batches, nowMillis) {
+        batches
+            .filter { it.releaseAtMillis > nowMillis }
+            .minByOrNull { it.releaseAtMillis }
+    }
+    val deliveredBatches = remember(batches, nowMillis) {
+        batches.filter { it.releaseAtMillis in 1..nowMillis }
+    }
+    val currentDeliveredBatch = remember(deliveredBatches) {
+        deliveredBatches.maxByOrNull { it.releaseAtMillis }
+    }
+    val historyBatchIds = remember(deliveredBatches, currentDeliveredBatch) {
+        deliveredBatches
+            .filter { it.batchId != currentDeliveredBatch?.batchId }
+            .map { it.batchId }
+            .toSet()
+    }
+    val historyNotifications = remember(notifications, historyBatchIds) {
+        notifications.filter { !it.isArchived && (it.batchId == null || it.batchId in historyBatchIds) }
+    }
+    val archivedNotifications = remember(notifications) {
+        notifications.filter { it.isArchived }
+    }
     val historyGroups = remember(historyNotifications) { groupNotifications(historyNotifications) }
     val archivedGroups = remember(archivedNotifications) { groupNotifications(archivedNotifications) }
 
@@ -781,17 +803,18 @@ private fun NotificationsScreen(
                         onOpenBatch(waitingBatch.batchId)
                     },
                     onArchiveBatch = {
-                        onArchiveBatch(waitingBatch.batchId)
+                        val keys = waitingBatch.notificationKeys()
+                        onArchiveNotifications(keys)
                         scope.launch {
                             val result = snackbarHostState.showSnackbar("Batch archived", "Undo")
-                            if (result.name == "ActionPerformed") onUnarchiveBatch(waitingBatch.batchId)
+                            if (result.name == "ActionPerformed") onUnarchiveNotifications(keys)
                         }
                     },
-                    onArchiveNotification = { key ->
-                        onArchiveNotification(key)
+                    onArchiveNotifications = { keys ->
+                        onArchiveNotifications(keys)
                         scope.launch {
                             val result = snackbarHostState.showSnackbar("Notification archived", "Undo")
-                            if (result.name == "ActionPerformed") onUnarchiveNotification(key)
+                            if (result.name == "ActionPerformed") onUnarchiveNotifications(keys)
                         }
                     },
                 )
@@ -812,17 +835,18 @@ private fun NotificationsScreen(
                     onToggle = {},
                     onOpenBatch = { onOpenBatch(currentDeliveredBatch.batchId) },
                     onArchiveBatch = {
-                        onArchiveBatch(currentDeliveredBatch.batchId)
+                        val keys = currentDeliveredBatch.notificationKeys()
+                        onArchiveNotifications(keys)
                         scope.launch {
                             val result = snackbarHostState.showSnackbar("Batch archived", "Undo")
-                            if (result.name == "ActionPerformed") onUnarchiveBatch(currentDeliveredBatch.batchId)
+                            if (result.name == "ActionPerformed") onUnarchiveNotifications(keys)
                         }
                     },
-                    onArchiveNotification = { key ->
-                        onArchiveNotification(key)
+                    onArchiveNotifications = { keys ->
+                        onArchiveNotifications(keys)
                         scope.launch {
                             val result = snackbarHostState.showSnackbar("Notification archived", "Undo")
-                            if (result.name == "ActionPerformed") onUnarchiveNotification(key)
+                            if (result.name == "ActionPerformed") onUnarchiveNotifications(keys)
                         }
                     },
                 )
@@ -840,7 +864,7 @@ private fun NotificationsScreen(
                         scope.launch {
                             onArchiveHistory(keys)
                             val result = snackbarHostState.showSnackbar("History cleared", "Undo")
-                            if (result.name == "ActionPerformed") keys.forEach { onUnarchiveNotification(it) }
+                            if (result.name == "ActionPerformed") onUnarchiveNotifications(keys)
                         }
                     }) { Text("Clear all") }
                 }
@@ -861,10 +885,10 @@ private fun NotificationsScreen(
                 group = group,
                 archiveLabel = "Archive",
                 onArchive = {
-                    group.notificationKeys.forEach(onArchiveNotification)
+                    onArchiveNotifications(group.notificationKeys)
                     scope.launch {
                         val result = snackbarHostState.showSnackbar("Notification archived", "Undo")
-                        if (result.name == "ActionPerformed") group.notificationKeys.forEach(onUnarchiveNotification)
+                        if (result.name == "ActionPerformed") onUnarchiveNotifications(group.notificationKeys)
                     }
                 },
                 onRestore = null,
@@ -887,8 +911,8 @@ private fun NotificationsScreen(
                 NotificationRow(
                     group = group,
                     archiveLabel = "Restore",
-                    onArchive = { group.notificationKeys.forEach(onUnarchiveNotification) },
-                    onRestore = { group.notificationKeys.forEach(onUnarchiveNotification) },
+                    onArchive = { onUnarchiveNotifications(group.notificationKeys) },
+                    onRestore = { onUnarchiveNotifications(group.notificationKeys) },
                 )
             }
         }
@@ -1024,8 +1048,11 @@ private fun BatchSummaryCard(
     onToggle: () -> Unit,
     onOpenBatch: () -> Unit,
     onArchiveBatch: () -> Unit,
-    onArchiveNotification: (String) -> Unit,
+    onArchiveNotifications: (List<String>) -> Unit,
 ) {
+    val previewGroups = remember(batch.notifications) {
+        groupNotifications(batch.notifications).take(8)
+    }
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -1085,11 +1112,11 @@ private fun BatchSummaryCard(
                 exit = fadeOut() + shrinkVertically(),
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
-                    groupNotifications(batch.notifications).take(8).forEach { group ->
+                    previewGroups.forEach { group ->
                         NotificationRow(
                             group = group,
                             archiveLabel = "Archive",
-                            onArchive = { group.notificationKeys.forEach(onArchiveNotification) },
+                            onArchive = { onArchiveNotifications(group.notificationKeys) },
                             onRestore = null,
                         )
                     }
@@ -1108,10 +1135,8 @@ private fun BatchDetailScreen(
     batch: InboxBatch?,
     batchId: String,
     snackbarHostState: SnackbarHostState,
-    onArchiveBatch: (String) -> Unit,
-    onUnarchiveBatch: (String) -> Unit,
-    onArchiveNotification: (String) -> Unit,
-    onUnarchiveNotification: (String) -> Unit,
+    onArchiveNotifications: (List<String>) -> Unit,
+    onUnarchiveNotifications: (List<String>) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     var query by remember { mutableStateOf("") }
@@ -1146,10 +1171,11 @@ private fun BatchDetailScreen(
             ) {
                 OutlinedButton(
                     onClick = {
-                        onArchiveBatch(batchId)
+                        val keys = batch.notificationKeys()
+                        onArchiveNotifications(keys)
                         scope.launch {
                             val result = snackbarHostState.showSnackbar("Batch archived", "Undo")
-                            if (result.name == "ActionPerformed") onUnarchiveBatch(batchId)
+                            if (result.name == "ActionPerformed") onUnarchiveNotifications(keys)
                         }
                     },
                 ) {
@@ -1168,9 +1194,9 @@ private fun BatchDetailScreen(
                 archiveLabel = if (group.primary.isArchived) "Restore" else "Archive",
                 onArchive = {
                     if (group.primary.isArchived) {
-                        group.notificationKeys.forEach(onUnarchiveNotification)
+                        onUnarchiveNotifications(group.notificationKeys)
                     } else {
-                        group.notificationKeys.forEach(onArchiveNotification)
+                        onArchiveNotifications(group.notificationKeys)
                     }
                 },
                 onRestore = null,
@@ -1229,7 +1255,7 @@ private fun NotificationRow(
                 horizontalArrangement = Arrangement.spacedBy(MdSpacing.sm),
                 verticalAlignment = Alignment.Top,
             ) {
-                AppIcon(packageName = item.packageName, label = item.appLabel)
+                AppIcon(packageName = item.packageName, label = item.appLabel, modifier = Modifier.size(44.dp))
                 Column(Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
                         Text(item.appLabel, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -1364,11 +1390,13 @@ private fun RulesScreen(
     var query by remember { mutableStateOf("") }
     var modeFilter by remember { mutableStateOf<DeliveryMode?>(null) }
     var overridesOnly by remember { mutableStateOf(false) }
-    val visibleRules = rules
-        .filter { showSystemApps || !it.app.isSystemApp }
-        .filter { it.matches(query) }
-        .filter { modeFilter == null || it.app.mode == modeFilter || it.channels.any { channel -> channel.mode == modeFilter } }
-        .filter { !overridesOnly || it.channels.any { channel -> channel.mode != null } }
+    val visibleRules = remember(rules, showSystemApps, query, modeFilter, overridesOnly) {
+        rules
+            .filter { showSystemApps || !it.app.isSystemApp }
+            .filter { it.matches(query) }
+            .filter { modeFilter == null || it.app.mode == modeFilter || it.channels.any { channel -> channel.mode == modeFilter } }
+            .filter { !overridesOnly || it.channels.any { channel -> channel.mode != null } }
+    }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -1932,7 +1960,7 @@ private fun SettingsScreen(
                 onClick = {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                         context.startActivity(
-                            Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:${context.packageName}")),
+                            Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, "package:${context.packageName}".toUri()),
                         )
                     }
                 },
@@ -2196,7 +2224,7 @@ private fun OnboardingPermissionsPage(context: Context, onRequestPostNotificatio
                 onClick = {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                         context.startActivity(
-                            Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:${context.packageName}")),
+                            Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, "package:${context.packageName}".toUri()),
                         )
                     }
                 },
@@ -2496,20 +2524,36 @@ private fun SearchField(value: String, onQueryChange: (String) -> Unit, placehol
     )
 }
 
+private object AppIconCache {
+    private val icons = ConcurrentHashMap<String, ImageBitmap>()
+
+    fun cached(packageName: String): ImageBitmap? = icons[packageName]
+
+    suspend fun load(context: Context, packageName: String): ImageBitmap? {
+        cached(packageName)?.let { return it }
+        return withContext(Dispatchers.IO) {
+            icons[packageName] ?: runCatching {
+                context.packageManager.getApplicationIcon(packageName)
+                    .toBitmap(width = 96, height = 96)
+                    .asImageBitmap()
+            }.getOrNull()?.also { icons[packageName] = it }
+        }
+    }
+}
+
 @Composable
-private fun AppIcon(packageName: String, label: String, modifier: Modifier = Modifier.size(44.dp)) {
+private fun AppIcon(packageName: String, label: String, modifier: Modifier = Modifier) {
     val context = LocalContext.current
-    val bitmap = remember(packageName) {
-        runCatching {
-            context.packageManager.getApplicationIcon(packageName)
-                .toBitmap(width = 96, height = 96)
-                .asImageBitmap()
-        }.getOrNull()
+    val bitmap by produceState<ImageBitmap?>(initialValue = AppIconCache.cached(packageName), packageName) {
+        if (value == null) {
+            value = AppIconCache.load(context.applicationContext, packageName)
+        }
     }
     Surface(modifier = modifier.clip(MaterialTheme.shapes.medium), color = MaterialTheme.colorScheme.primaryContainer) {
         Box(contentAlignment = Alignment.Center) {
-            if (bitmap != null) {
-                Image(bitmap = bitmap, contentDescription = "$label icon", modifier = Modifier.fillMaxSize())
+            val icon = bitmap
+            if (icon != null) {
+                Image(bitmap = icon, contentDescription = "$label icon", modifier = Modifier.fillMaxSize())
             } else {
                 Text(label.take(1), style = MaterialTheme.typography.titleMedium)
             }

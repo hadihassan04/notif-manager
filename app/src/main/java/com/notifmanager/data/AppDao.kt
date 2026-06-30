@@ -17,6 +17,9 @@ interface AppDao {
     @Query("SELECT * FROM notifications WHERE batchId = :batchId ORDER BY postedAtMillis DESC")
     fun observeBatch(batchId: String): Flow<List<NotificationEntity>>
 
+    @Query("SELECT * FROM notifications WHERE batchId IS NULL AND deliveryMode = 'BATCH' ORDER BY postedAtMillis DESC")
+    fun observeUnbatchedBatch(): Flow<List<NotificationEntity>>
+
     @Query("SELECT * FROM notifications WHERE batchId = :batchId AND isArchived = 0 ORDER BY postedAtMillis DESC")
     suspend fun notificationsForBatch(batchId: String): List<NotificationEntity>
 
@@ -29,14 +32,26 @@ interface AppDao {
     @Query("UPDATE notifications SET isArchived = 1 WHERE notificationKey = :key")
     suspend fun archiveNotification(key: String)
 
+    @Query("UPDATE notifications SET isArchived = 1 WHERE notificationKey IN (:keys)")
+    suspend fun archiveNotifications(keys: List<String>)
+
     @Query("UPDATE notifications SET isArchived = 0 WHERE notificationKey = :key")
     suspend fun unarchiveNotification(key: String)
+
+    @Query("UPDATE notifications SET isArchived = 0 WHERE notificationKey IN (:keys)")
+    suspend fun unarchiveNotifications(keys: List<String>)
 
     @Query("UPDATE notifications SET isArchived = 1 WHERE batchId = :batchId")
     suspend fun archiveBatch(batchId: String)
 
+    @Query("UPDATE notifications SET isArchived = 1 WHERE batchId IS NULL AND deliveryMode = 'BATCH'")
+    suspend fun archiveUnbatchedBatch()
+
     @Query("UPDATE notifications SET isArchived = 0 WHERE batchId = :batchId")
     suspend fun unarchiveBatch(batchId: String)
+
+    @Query("UPDATE notifications SET isArchived = 0 WHERE batchId IS NULL AND deliveryMode = 'BATCH'")
+    suspend fun unarchiveUnbatchedBatch()
 
     @Query("UPDATE notifications SET isRead = 1 WHERE notificationKey = :key")
     suspend fun markNotificationRead(key: String)

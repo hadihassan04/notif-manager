@@ -10,9 +10,11 @@ import com.notifmanager.core.InsightsCalculator
 import com.notifmanager.core.RuleEngine
 import com.notifmanager.core.ScheduleCalculator
 import com.notifmanager.notifications.BatchScheduler
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOn
 import java.time.Instant
 import java.time.ZoneId
 
@@ -52,6 +54,14 @@ data class AppRuleUi(
     val channels: List<ChannelRuleUi>,
 )
 
+private data class AppCatalogEntry(
+    val packageName: String,
+    val label: String,
+    val isSystemApp: Boolean,
+    val isRecommendedHeavyApp: Boolean,
+    val isRecommendedInstantApp: Boolean,
+)
+
 class Repository(
     private val context: Context,
     private val dao: AppDao,
@@ -60,8 +70,11 @@ class Repository(
     private val ruleEngine = RuleEngine()
     private val insightsCalculator = InsightsCalculator()
     private val scheduleCalculator = ScheduleCalculator()
+    @Volatile private var cachedAppCatalog: List<AppCatalogEntry>? = null
 
-    val inbox: Flow<List<InboxBatch>> = dao.observeInbox().combine(dao.observeSchedules(), ::buildInboxBatches)
+    val inbox: Flow<List<InboxBatch>> = dao.observeInbox()
+        .combine(dao.observeSchedules(), ::buildInboxBatches)
+        .flowOn(Dispatchers.Default)
 
     val allNotifications: Flow<List<NotificationEntity>> = dao.observeAllNotifications()
     val schedules: Flow<List<ScheduleRuleEntity>> = dao.observeSchedules()
@@ -69,7 +82,7 @@ class Repository(
 
     val insights: Flow<Insights> = dao.observeAllNotifications().combine(dao.observeSchedules()) { notifications, _ ->
         insightsCalculator.calculate(notifications)
-    }
+    }.flowOn(Dispatchers.Default)
 
     val installedApps: Flow<List<InstalledApp>> = dao.observeAppRules().combine(dao.observeAllNotifications()) { rules, notifications ->
         val ruleMap = rules.associateBy { it.packageName }
@@ -78,46 +91,53 @@ class Repository(
             .mapValues { it.value.maxBy { item -> item.postedAtMillis }.appLabel }
         val notificationCounts = notificationsByPackage.mapValues { it.value.size }
         loadInstalledApps(ruleMap, capturedApps, notificationCounts)
-    }
+    }.flowOn(Dispatchers.IO)
 
     val rulesUi: Flow<List<AppRuleUi>> = combine(
         installedApps,
         dao.observeChannelRules(),
         dao.observeAllNotifications(),
     ) { apps, channelRules, notifications ->
-        val capturedChannels = notifications
+        val capturedChannelsByPackage = notifications
             .filter { it.channelId != null }
-            .groupBy { it.packageName + "\n" + it.channelId }
+            .groupBy { it.packageName }
         val channelRuleMap = channelRules.associateBy { it.packageName + "\n" + it.channelId }
         apps.map { app ->
+            val channels = capturedChannelsByPackage[app.packageName].orEmpty()
+                .groupBy { it.channelId.orEmpty() }
+                .map { (channelId, items) ->
+                    val latest = items.maxBy { it.postedAtMillis }
+                    val key = app.packageName + "\n" + channelId
+                    val rule = channelRuleMap[key]
+                    ChannelRuleUi(
+                        packageName = app.packageName,
+                        channelId = channelId,
+                        channelName = rule?.channelName ?: latest.channelId ?: channelId,
+                        mode = rule?.deliveryMode,
+                        notificationCount = items.size,
+                    )
+                }
+                .sortedBy { it.channelName.lowercase() }
             AppRuleUi(
                 app = app,
-                channels = capturedChannels
-                    .filterKeys { it.substringBefore("\n") == app.packageName }
-                    .map { (key, items) ->
-                        val channelId = key.substringAfter("\n")
-                        val latest = items.maxBy { it.postedAtMillis }
-                        val rule = channelRuleMap[key]
-                        ChannelRuleUi(
-                            packageName = app.packageName,
-                            channelId = channelId,
-                            channelName = rule?.channelName ?: latest.channelId ?: channelId,
-                            mode = rule?.deliveryMode,
-                            notificationCount = items.size,
-                        )
-                    }
-                    .sortedBy { it.channelName.lowercase() },
+                channels = channels,
             )
         }
-    }
+    }.flowOn(Dispatchers.Default)
 
     fun batch(batchId: String): Flow<InboxBatch?> {
-        return dao.observeBatch(batchId).combine(dao.observeSchedules()) { notifications, schedules ->
-            buildInboxBatches(notifications, schedules).firstOrNull { it.batchId == batchId }
-                ?: notifications.takeIf { it.isNotEmpty() }?.let { items ->
+        val notificationsFlow = if (batchId == UNBATCHED_BATCH_ID) {
+            dao.observeUnbatchedBatch()
+        } else {
+            dao.observeBatch(batchId)
+        }
+        return notificationsFlow.combine(dao.observeSchedules()) { notifications, schedules ->
+            val activeNotifications = notifications.filterNot { it.isArchived }
+            buildInboxBatches(activeNotifications, schedules).firstOrNull { it.batchId == batchId }
+                ?: activeNotifications.takeIf { it.isNotEmpty() }?.let { items ->
                     buildBatch(batchId, items, schedules.associateBy { it.id })
                 }
-        }
+        }.flowOn(Dispatchers.Default)
     }
 
     suspend fun capture(incoming: IncomingNotification): NotificationEntity {
@@ -242,9 +262,29 @@ class Repository(
 
     suspend fun unarchiveNotification(key: String) = dao.unarchiveNotification(key)
 
-    suspend fun archiveBatch(batchId: String) = dao.archiveBatch(batchId)
+    suspend fun archiveNotifications(keys: List<String>) {
+        if (keys.isNotEmpty()) dao.archiveNotifications(keys)
+    }
 
-    suspend fun unarchiveBatch(batchId: String) = dao.unarchiveBatch(batchId)
+    suspend fun unarchiveNotifications(keys: List<String>) {
+        if (keys.isNotEmpty()) dao.unarchiveNotifications(keys)
+    }
+
+    suspend fun archiveBatch(batchId: String) {
+        if (batchId == UNBATCHED_BATCH_ID) {
+            dao.archiveUnbatchedBatch()
+        } else {
+            dao.archiveBatch(batchId)
+        }
+    }
+
+    suspend fun unarchiveBatch(batchId: String) {
+        if (batchId == UNBATCHED_BATCH_ID) {
+            dao.unarchiveUnbatchedBatch()
+        } else {
+            dao.unarchiveBatch(batchId)
+        }
+    }
 
     suspend fun markNotificationRead(key: String) = dao.markNotificationRead(key)
 
@@ -296,30 +336,24 @@ class Repository(
         capturedApps: Map<String, String>,
         notificationCounts: Map<String, Int>,
     ): List<InstalledApp> {
-        val pm = context.packageManager
-        val installed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            pm.getInstalledApplications(PackageManager.ApplicationInfoFlags.of(0))
-        } else {
-            @Suppress("DEPRECATION")
-            pm.getInstalledApplications(0)
-        }
-        return installed
-            .map {
-                val label = it.loadLabel(pm).toString()
-                val rule = ruleMap[it.packageName]
+        val catalog = appCatalog()
+        val catalogPackages = catalog.mapTo(mutableSetOf()) { it.packageName }
+        return catalog
+            .map { entry ->
+                val rule = ruleMap[entry.packageName]
                 InstalledApp(
-                    packageName = it.packageName,
-                    label = rule?.appLabel ?: capturedApps[it.packageName] ?: label,
+                    packageName = entry.packageName,
+                    label = rule?.appLabel ?: capturedApps[entry.packageName] ?: entry.label,
                     mode = rule?.deliveryMode ?: DeliveryMode.BATCH,
-                    isSystemApp = it.isSystemApp(),
-                    notificationCount = notificationCounts[it.packageName] ?: 0,
-                    isRecommendedHeavyApp = isRecommendedHeavyApp(it.packageName, label),
-                    isRecommendedInstantApp = isRecommendedInstantApp(it.packageName, label),
+                    isSystemApp = entry.isSystemApp,
+                    notificationCount = notificationCounts[entry.packageName] ?: 0,
+                    isRecommendedHeavyApp = entry.isRecommendedHeavyApp,
+                    isRecommendedInstantApp = entry.isRecommendedInstantApp,
                 )
             }
             .plus(
                 capturedApps
-                    .filterKeys { packageName -> installed.none { it.packageName == packageName } }
+                    .filterKeys { packageName -> packageName !in catalogPackages }
                     .map { (packageName, label) ->
                         InstalledApp(
                             packageName = packageName,
@@ -340,6 +374,33 @@ class Repository(
             )
     }
 
+    private fun appCatalog(): List<AppCatalogEntry> {
+        cachedAppCatalog?.let { return it }
+        return synchronized(this) {
+            cachedAppCatalog ?: loadAppCatalog().also { cachedAppCatalog = it }
+        }
+    }
+
+    private fun loadAppCatalog(): List<AppCatalogEntry> {
+        val pm = context.packageManager
+        val installed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            pm.getInstalledApplications(PackageManager.ApplicationInfoFlags.of(0))
+        } else {
+            @Suppress("DEPRECATION")
+            pm.getInstalledApplications(0)
+        }
+        return installed.map {
+            val label = it.loadLabel(pm).toString()
+            AppCatalogEntry(
+                packageName = it.packageName,
+                label = label,
+                isSystemApp = it.isSystemApp(),
+                isRecommendedHeavyApp = isRecommendedHeavyApp(it.packageName, label),
+                isRecommendedInstantApp = isRecommendedInstantApp(it.packageName, label),
+            )
+        }
+    }
+
     private fun buildInboxBatches(
         notifications: List<NotificationEntity>,
         schedules: List<ScheduleRuleEntity>,
@@ -347,7 +408,7 @@ class Repository(
         val schedulesById = schedules.associateBy { it.id }
         return notifications
             .filter { it.deliveryMode == DeliveryMode.BATCH }
-            .groupBy { it.batchId ?: "unbatched" }
+            .groupBy { it.batchId ?: UNBATCHED_BATCH_ID }
             .map { (batchId, items) -> buildBatch(batchId, items, schedulesById) }
             .sortedByDescending { it.newestAtMillis }
     }
@@ -380,7 +441,7 @@ class Repository(
         return InboxBatch(
             batchId = batchId,
             title = when {
-                batchId == "unbatched" -> "Unbatched"
+                batchId == UNBATCHED_BATCH_ID -> "Unbatched"
                 releaseMinutes != null -> "${formatMinutes(releaseMinutes)} batch"
                 else -> "Batch"
             },
@@ -458,6 +519,8 @@ class Repository(
     }
 
     companion object {
+        const val UNBATCHED_BATCH_ID = "unbatched"
+
         private val RECOMMENDED_HEAVY_APP_HINTS = listOf(
             "instagram",
             "facebook",

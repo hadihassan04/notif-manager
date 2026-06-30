@@ -58,7 +58,6 @@ class NotificationPublisher(private val context: Context) {
     }
 
     private fun ensureChannel() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val manager = context.getSystemService(NotificationManager::class.java)
         val channel = NotificationChannel(
             DIGEST_CHANNEL_ID,
