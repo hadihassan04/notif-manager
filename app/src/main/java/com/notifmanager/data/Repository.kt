@@ -1,6 +1,7 @@
 package com.notifmanager.data
 
 import android.content.Context
+import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.os.Build
@@ -383,22 +384,26 @@ class Repository(
 
     private fun loadAppCatalog(): List<AppCatalogEntry> {
         val pm = context.packageManager
-        val installed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            pm.getInstalledApplications(PackageManager.ApplicationInfoFlags.of(0))
+        val launcherIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        val launcherApps = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            pm.queryIntentActivities(launcherIntent, PackageManager.ResolveInfoFlags.of(0))
         } else {
             @Suppress("DEPRECATION")
-            pm.getInstalledApplications(0)
+            pm.queryIntentActivities(launcherIntent, 0)
         }
-        return installed.map {
-            val label = it.loadLabel(pm).toString()
-            AppCatalogEntry(
-                packageName = it.packageName,
-                label = label,
-                isSystemApp = it.isSystemApp(),
-                isRecommendedHeavyApp = isRecommendedHeavyApp(it.packageName, label),
-                isRecommendedInstantApp = isRecommendedInstantApp(it.packageName, label),
-            )
-        }
+        return launcherApps
+            .mapNotNull { it.activityInfo?.applicationInfo }
+            .distinctBy { it.packageName }
+            .map {
+                val label = it.loadLabel(pm).toString()
+                AppCatalogEntry(
+                    packageName = it.packageName,
+                    label = label,
+                    isSystemApp = it.isSystemApp(),
+                    isRecommendedHeavyApp = isRecommendedHeavyApp(it.packageName, label),
+                    isRecommendedInstantApp = isRecommendedInstantApp(it.packageName, label),
+                )
+            }
     }
 
     private fun buildInboxBatches(
