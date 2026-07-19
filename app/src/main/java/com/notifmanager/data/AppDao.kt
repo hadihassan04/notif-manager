@@ -14,14 +14,46 @@ interface AppDao {
     @Query("SELECT * FROM notifications ORDER BY postedAtMillis DESC")
     fun observeAllNotifications(): Flow<List<NotificationEntity>>
 
-    @Query("SELECT * FROM notifications WHERE batchId = :batchId ORDER BY postedAtMillis DESC")
-    fun observeBatch(batchId: String): Flow<List<NotificationEntity>>
+    @Query("SELECT * FROM notifications ORDER BY postedAtMillis DESC LIMIT :limit")
+    fun observeRecentNotifications(limit: Int): Flow<List<NotificationEntity>>
 
-    @Query("SELECT * FROM notifications WHERE batchId IS NULL AND deliveryMode = 'BATCH' ORDER BY postedAtMillis DESC")
-    fun observeUnbatchedBatch(): Flow<List<NotificationEntity>>
+    @Query(
+        """
+        SELECT
+            n.packageName AS packageName,
+            (
+                SELECT latest.appLabel
+                FROM notifications AS latest
+                WHERE latest.packageName = n.packageName
+                ORDER BY latest.postedAtMillis DESC
+                LIMIT 1
+            ) AS appLabel,
+            COUNT(*) AS notificationCount
+        FROM notifications AS n
+        GROUP BY n.packageName
+        """,
+    )
+    fun observePackageSummaries(): Flow<List<NotificationPackageSummary>>
+
+    @Query(
+        """
+        SELECT
+            n.packageName AS packageName,
+            IFNULL(n.channelId, '') AS channelId,
+            IFNULL(n.channelId, '') AS channelName,
+            COUNT(*) AS notificationCount
+        FROM notifications AS n
+        WHERE n.channelId IS NOT NULL
+        GROUP BY n.packageName, n.channelId
+        """,
+    )
+    fun observeChannelSummaries(): Flow<List<NotificationChannelSummary>>
 
     @Query("SELECT * FROM notifications WHERE batchId = :batchId AND isArchived = 0 ORDER BY postedAtMillis DESC")
     suspend fun notificationsForBatch(batchId: String): List<NotificationEntity>
+
+    @Query("SELECT * FROM notifications WHERE batchId IS NULL AND deliveryMode = 'BATCH' AND isArchived = 0 ORDER BY postedAtMillis DESC")
+    suspend fun notificationsForUnbatchedBatch(): List<NotificationEntity>
 
     @Query("SELECT * FROM notifications WHERE notificationKey = :key LIMIT 1")
     suspend fun notificationByKey(key: String): NotificationEntity?

@@ -19,6 +19,7 @@ data class IncomingNotification(
     val channelName: String?,
     val category: String?,
     val postedAtMillis: Long,
+    val batchesByDefault: Boolean = true,
 )
 
 data class RuleDecision(
@@ -34,6 +35,7 @@ class RuleEngine(private val zoneId: ZoneId = ZoneId.systemDefault()) {
         schedules: List<ScheduleRuleEntity>,
         appRules: List<AppRuleEntity>,
         channelRules: List<ChannelRuleEntity>,
+        defaultDeliveryMode: DeliveryMode = DeliveryMode.BATCH,
     ): RuleDecision {
         val schedule = schedules
             .filter { it.isEnabled }
@@ -65,9 +67,8 @@ class RuleEngine(private val zoneId: ZoneId = ZoneId.systemDefault()) {
             )
         }
 
-        return RuleDecision(
-            deliveryMode = DeliveryMode.BATCH,
-            ruleSource = RuleSource.DEFAULT,
+        return defaultDeliveryMode.toDecision(
+            source = RuleSource.DEFAULT,
             batchId = batchIdFor(incoming.postedAtMillis, schedule),
             schedule = schedule,
         )

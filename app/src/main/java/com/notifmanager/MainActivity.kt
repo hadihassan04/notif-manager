@@ -14,8 +14,9 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -89,9 +90,9 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
@@ -119,6 +120,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -133,12 +136,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
-import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import androidx.navigation.navArgument
 import com.notifmanager.core.Insights
 import com.notifmanager.core.InsightsCalculator
 import com.notifmanager.core.ScheduleCalculator
@@ -156,7 +157,6 @@ import com.notifmanager.notifications.PendingIntentRegistry
 import com.notifmanager.ui.theme.MdSpacing
 import com.notifmanager.ui.theme.NotifManagerTheme
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
@@ -214,7 +214,7 @@ class MainViewModel(
         SharingStarted.WhileSubscribed(5_000),
         emptyList(),
     )
-    val history: StateFlow<List<NotificationEntity>> = repository.allNotifications.stateIn(
+    val history: StateFlow<List<NotificationEntity>> = repository.recentNotifications.stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5_000),
         emptyList(),
@@ -272,12 +272,11 @@ class MainViewModel(
 
     init {
         viewModelScope.launch {
+            repository.normalizeNonBatchableDefaults()
             repository.reschedule()
             repository.cleanupHistory(historyRetentionDays.value)
         }
     }
-
-    fun batch(batchId: String): Flow<InboxBatch?> = repository.batch(batchId)
 
     fun setAppMode(app: InstalledApp, mode: DeliveryMode) {
         viewModelScope.launch { repository.setAppMode(app.packageName, app.label, mode) }
@@ -419,16 +418,16 @@ private fun NotifManagerApp(
     val backStack by navController.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route ?: Destination.Inbox.route
     val topLevel = Destination.entries.firstOrNull { it.route == currentRoute }
-    val title = topLevel?.label ?: if (currentRoute.startsWith("batch/")) "Batch detail" else "Notifs"
+    val title = topLevel?.label ?: "Notifs"
     val pauseBatching by viewModel.pauseBatching.collectAsStateWithLifecycle()
     var showPauseDialog by remember { mutableStateOf(false) }
     var showScheduleAddDialog by remember { mutableStateOf(false) }
+    var requestedBatchExpansion by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(pendingBatchId, onboardingCompleted) {
         if (pendingBatchId != null && onboardingCompleted) {
-            navController.navigate("batch/$pendingBatchId") {
-                launchSingleTop = true
-            }
+            requestedBatchExpansion = pendingBatchId
+            navigateTopLevel(navController, Destination.Inbox.route)
             onBatchIntentConsumed()
         }
     }
@@ -514,7 +513,8 @@ private fun NotifManagerApp(
                             notifications = notifications,
                             schedules = schedules,
                             snackbarHostState = snackbarHostState,
-                            onOpenBatch = { navController.navigate("batch/$it") },
+                            requestedBatchExpansion = requestedBatchExpansion,
+                            onBatchExpansionConsumed = { requestedBatchExpansion = null },
                             onArchiveNotifications = viewModel::archiveNotifications,
                             onUnarchiveNotifications = viewModel::unarchiveNotifications,
                             onArchiveHistory = viewModel::archiveHistory,
@@ -560,20 +560,6 @@ private fun NotifManagerApp(
                             onRetentionDays = viewModel::setHistoryRetentionDays,
                             onCleanupNow = viewModel::cleanupHistoryNow,
                             onReplayOnboarding = viewModel::replayOnboarding,
-                        )
-                    }
-                    composable(
-                        route = "batch/{batchId}",
-                        arguments = listOf(navArgument("batchId") { type = NavType.StringType }),
-                    ) { entry ->
-                        val batchId = entry.arguments?.getString("batchId").orEmpty()
-                        val batch by viewModel.batch(batchId).collectAsStateWithLifecycle(initialValue = null)
-                        BatchDetailScreen(
-                            batch = batch,
-                            batchId = batchId,
-                            snackbarHostState = snackbarHostState,
-                            onArchiveNotifications = viewModel::archiveNotifications,
-                            onUnarchiveNotifications = viewModel::unarchiveNotifications,
                         )
                     }
                 }
@@ -732,7 +718,8 @@ private fun NotificationsScreen(
     notifications: List<NotificationEntity>,
     schedules: List<ScheduleRuleEntity>,
     snackbarHostState: SnackbarHostState,
-    onOpenBatch: (String) -> Unit,
+    requestedBatchExpansion: String?,
+    onBatchExpansionConsumed: () -> Unit,
     onArchiveNotifications: (List<String>) -> Unit,
     onUnarchiveNotifications: (List<String>) -> Unit,
     onArchiveHistory: (List<String>) -> Unit,
@@ -747,6 +734,13 @@ private fun NotificationsScreen(
             delay(60_000L)
             nowMillis = System.currentTimeMillis()
         }
+    }
+    LaunchedEffect(requestedBatchExpansion, batches) {
+        val batchId = requestedBatchExpansion ?: return@LaunchedEffect
+        if (batches.any { it.batchId == batchId } && batchId !in expandedBatchIds) {
+            expandedBatchIds.add(batchId)
+        }
+        onBatchExpansionConsumed()
     }
 
     val waitingBatch = remember(batches, nowMillis) {
@@ -799,21 +793,18 @@ private fun NotificationsScreen(
                     onToggle = {
                         if (expanded) expandedBatchIds.remove(waitingBatch.batchId) else expandedBatchIds.add(waitingBatch.batchId)
                     },
-                    onOpenBatch = {
-                        onOpenBatch(waitingBatch.batchId)
-                    },
                     onArchiveBatch = {
                         val keys = waitingBatch.notificationKeys()
                         onArchiveNotifications(keys)
                         scope.launch {
-                            val result = snackbarHostState.showSnackbar("Batch archived", "Undo")
+                            val result = snackbarHostState.showSnackbar("Batch cleared", "Undo")
                             if (result.name == "ActionPerformed") onUnarchiveNotifications(keys)
                         }
                     },
                     onArchiveNotifications = { keys ->
                         onArchiveNotifications(keys)
                         scope.launch {
-                            val result = snackbarHostState.showSnackbar("Notification archived", "Undo")
+                            val result = snackbarHostState.showSnackbar("Notification cleared", "Undo")
                             if (result.name == "ActionPerformed") onUnarchiveNotifications(keys)
                         }
                     },
@@ -833,19 +824,18 @@ private fun NotificationsScreen(
                     showToggle = false,
                     statusLabel = "Delivered at ${formatTime(currentDeliveredBatch.releaseAtMillis)}",
                     onToggle = {},
-                    onOpenBatch = { onOpenBatch(currentDeliveredBatch.batchId) },
                     onArchiveBatch = {
                         val keys = currentDeliveredBatch.notificationKeys()
                         onArchiveNotifications(keys)
                         scope.launch {
-                            val result = snackbarHostState.showSnackbar("Batch archived", "Undo")
+                            val result = snackbarHostState.showSnackbar("Batch cleared", "Undo")
                             if (result.name == "ActionPerformed") onUnarchiveNotifications(keys)
                         }
                     },
                     onArchiveNotifications = { keys ->
                         onArchiveNotifications(keys)
                         scope.launch {
-                            val result = snackbarHostState.showSnackbar("Notification archived", "Undo")
+                            val result = snackbarHostState.showSnackbar("Notification cleared", "Undo")
                             if (result.name == "ActionPerformed") onUnarchiveNotifications(keys)
                         }
                     },
@@ -882,16 +872,23 @@ private fun NotificationsScreen(
 
         items(historyGroups, key = { it.key }) { group ->
             NotificationRow(
+                modifier = Modifier.animateItem(
+                    fadeInSpec = spring(stiffness = Spring.StiffnessMediumLow),
+                    fadeOutSpec = spring(stiffness = Spring.StiffnessMediumLow),
+                    placementSpec = spring(
+                        dampingRatio = Spring.DampingRatioNoBouncy,
+                        stiffness = Spring.StiffnessMediumLow,
+                    ),
+                ),
                 group = group,
-                archiveLabel = "Archive",
+                archiveLabel = "Clear",
                 onArchive = {
                     onArchiveNotifications(group.notificationKeys)
                     scope.launch {
-                        val result = snackbarHostState.showSnackbar("Notification archived", "Undo")
+                        val result = snackbarHostState.showSnackbar("Notification cleared", "Undo")
                         if (result.name == "ActionPerformed") onUnarchiveNotifications(group.notificationKeys)
                     }
                 },
-                onRestore = null,
             )
         }
 
@@ -909,10 +906,17 @@ private fun NotificationsScreen(
         if (showArchived) {
             items(archivedGroups, key = { "arc_${it.key}" }) { group ->
                 NotificationRow(
+                    modifier = Modifier.animateItem(
+                        fadeInSpec = spring(stiffness = Spring.StiffnessMediumLow),
+                        fadeOutSpec = spring(stiffness = Spring.StiffnessMediumLow),
+                        placementSpec = spring(
+                            dampingRatio = Spring.DampingRatioNoBouncy,
+                            stiffness = Spring.StiffnessMediumLow,
+                        ),
+                    ),
                     group = group,
                     archiveLabel = "Restore",
                     onArchive = { onUnarchiveNotifications(group.notificationKeys) },
-                    onRestore = { onUnarchiveNotifications(group.notificationKeys) },
                 )
             }
         }
@@ -1046,17 +1050,15 @@ private fun BatchSummaryCard(
     showToggle: Boolean = true,
     statusLabel: String? = null,
     onToggle: () -> Unit,
-    onOpenBatch: () -> Unit,
     onArchiveBatch: () -> Unit,
     onArchiveNotifications: (List<String>) -> Unit,
 ) {
     val previewGroups = remember(batch.notifications) {
-        groupNotifications(batch.notifications).take(8)
+        groupNotifications(batch.notifications)
     }
     Card(
         modifier = Modifier
-            .fillMaxWidth()
-            .animateContentSize(),
+            .fillMaxWidth(),
         colors = CardDefaults.cardColors(
             containerColor = if (isNext) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerLow,
         ),
@@ -1098,14 +1100,6 @@ private fun BatchSummaryCard(
                     }
                 }
             }
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                FilledTonalButton(onClick = onOpenBatch) {
-                    Text("Open")
-                }
-            }
             AnimatedVisibility(
                 visible = expanded,
                 enter = fadeIn() + expandVertically(),
@@ -1115,142 +1109,87 @@ private fun BatchSummaryCard(
                     previewGroups.forEach { group ->
                         NotificationRow(
                             group = group,
-                            archiveLabel = "Archive",
+                            archiveLabel = "Clear",
                             onArchive = { onArchiveNotifications(group.notificationKeys) },
-                            onRestore = null,
                         )
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
-                        Button(onClick = onOpenBatch) { Text("View all") }
-                        OutlinedButton(onClick = onArchiveBatch) { Text("Archive batch") }
+                        OutlinedButton(onClick = onArchiveBatch) { Text("Clear batch") }
                     }
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun BatchDetailScreen(
-    batch: InboxBatch?,
-    batchId: String,
-    snackbarHostState: SnackbarHostState,
-    onArchiveNotifications: (List<String>) -> Unit,
-    onUnarchiveNotifications: (List<String>) -> Unit,
-) {
-    val scope = rememberCoroutineScope()
-    var query by remember { mutableStateOf("") }
-    if (batch == null) {
-        EmptyState("Batch not found", "This batch may have been cleared by retention or archive cleanup.")
-        return
-    }
-    val filtered = remember(batch.notifications, query) {
-        groupNotifications(batch.notifications).filter { it.matches(query) }
-    }
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(MdSpacing.sm),
-        verticalArrangement = Arrangement.spacedBy(MdSpacing.sm),
-    ) {
-        item {
-            ExpressiveStatusCard(
-                title = batch.title,
-                body = "${batch.notificationCount} notifications · ${batch.releaseLabel}",
-                icon = Icons.Filled.Inbox,
-            )
-        }
-        item {
-            SearchField(query, onQueryChange = { query = it }, placeholder = "Search this batch")
-        }
-        item {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs),
-            ) {
-                OutlinedButton(
-                    onClick = {
-                        val keys = batch.notificationKeys()
-                        onArchiveNotifications(keys)
-                        scope.launch {
-                            val result = snackbarHostState.showSnackbar("Batch archived", "Undo")
-                            if (result.name == "ActionPerformed") onUnarchiveNotifications(keys)
-                        }
-                    },
-                ) {
-                    Text("Archive batch")
-                }
-                Text(
-                    "${filtered.sumOf { it.count }} notifications · ${filtered.size} conversations",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-        items(filtered, key = { it.key }) { group ->
-            NotificationRow(
-                group = group,
-                archiveLabel = if (group.primary.isArchived) "Restore" else "Archive",
-                onArchive = {
-                    if (group.primary.isArchived) {
-                        onUnarchiveNotifications(group.notificationKeys)
-                    } else {
-                        onArchiveNotifications(group.notificationKeys)
-                    }
-                },
-                onRestore = null,
-            )
         }
     }
 }
 
 @Composable
 private fun NotificationRow(
+    modifier: Modifier = Modifier,
     group: NotificationGroup,
     archiveLabel: String,
     onArchive: () -> Unit,
-    onRestore: (() -> Unit)?,
 ) {
     val context = LocalContext.current
+    val hapticFeedback = LocalHapticFeedback.current
     val item = group.primary
-    var selected by remember { mutableStateOf<NotificationGroup?>(null) }
+    val swipeEnabled = archiveLabel != "Restore"
     val dismissState = rememberSwipeToDismissBoxState(
+        positionalThreshold = { distance -> distance * 0.38f },
         confirmValueChange = { value ->
-            when (value) {
-                SwipeToDismissBoxValue.StartToEnd -> {
-                    onArchive()
-                    false
-                }
-                SwipeToDismissBoxValue.EndToStart -> {
-                    onArchive()
-                    false
-                }
-                SwipeToDismissBoxValue.Settled -> false
+            if (value != SwipeToDismissBoxValue.Settled && swipeEnabled) {
+                hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                onArchive()
+                true
+            } else {
+                false
             }
         },
     )
     SwipeToDismissBox(
         state = dismissState,
-        enableDismissFromStartToEnd = true,
-        enableDismissFromEndToStart = true,
+        modifier = modifier.fillMaxWidth(),
+        enableDismissFromStartToEnd = swipeEnabled,
+        enableDismissFromEndToStart = swipeEnabled,
         backgroundContent = {
-            SwipeActionBackground(
-                direction = dismissState.dismissDirection,
-                archiveLabel = archiveLabel,
-            )
+            val alignment = when (dismissState.dismissDirection) {
+                SwipeToDismissBoxValue.StartToEnd -> Alignment.CenterStart
+                SwipeToDismissBoxValue.EndToStart -> Alignment.CenterEnd
+                SwipeToDismissBoxValue.Settled -> Alignment.CenterEnd
+            }
+            val backgroundColor = if (swipeEnabled) {
+                MaterialTheme.colorScheme.tertiaryContainer
+            } else {
+                Color.Transparent
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(MaterialTheme.shapes.medium)
+                    .background(backgroundColor)
+                    .padding(horizontal = MdSpacing.sm),
+                contentAlignment = alignment,
+            ) {
+                if (swipeEnabled) {
+                    Icon(
+                        Icons.Filled.Archive,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                    )
+                }
+            }
         },
     ) {
         Surface(
             modifier = Modifier.fillMaxWidth(),
             color = MaterialTheme.colorScheme.surface,
             shape = MaterialTheme.shapes.medium,
+            tonalElevation = 1.dp,
         ) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(MaterialTheme.shapes.medium)
-                    .clickable { selected = group }
+                    .clickable { openOriginalNotification(context, item) }
                     .padding(MdSpacing.xs),
                 horizontalArrangement = Arrangement.spacedBy(MdSpacing.sm),
                 verticalAlignment = Alignment.Top,
@@ -1281,95 +1220,16 @@ private fun NotificationRow(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-            }
-        }
-    }
-    if (selected != null) {
-        NotificationDetailDialog(
-            group = selected ?: group,
-            onDismiss = { selected = null },
-            onOpenOriginal = {
-                openOriginalNotification(context, item)
-                selected = null
-            },
-            onArchive = {
-                onArchive()
-                selected = null
-            },
-            onRestore = onRestore,
-        )
-    }
-}
-
-@Composable
-private fun SwipeActionBackground(
-    direction: SwipeToDismissBoxValue,
-    archiveLabel: String,
-) {
-    val isAction = direction != SwipeToDismissBoxValue.Settled
-    val color = when {
-        isAction -> MaterialTheme.colorScheme.tertiaryContainer
-        else -> Color.Transparent
-    }
-    val contentColor = when {
-        isAction -> MaterialTheme.colorScheme.onTertiaryContainer
-        else -> MaterialTheme.colorScheme.onSurfaceVariant
-    }
-    val alignment = if (direction == SwipeToDismissBoxValue.StartToEnd) Alignment.CenterStart else Alignment.CenterEnd
-    val icon = if (archiveLabel == "Restore") Icons.Filled.Restore else Icons.Filled.Archive
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .clip(MaterialTheme.shapes.medium)
-            .background(color)
-            .padding(horizontal = MdSpacing.sm),
-        contentAlignment = alignment,
-    ) {
-        if (isAction) {
-            Row(horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs), verticalAlignment = Alignment.CenterVertically) {
-                Icon(icon, contentDescription = null, tint = contentColor)
-                Text(archiveLabel, style = MaterialTheme.typography.labelLarge, color = contentColor)
-            }
-        }
-    }
-}
-
-@Composable
-private fun NotificationDetailDialog(
-    group: NotificationGroup,
-    onDismiss: () -> Unit,
-    onOpenOriginal: () -> Unit,
-    onArchive: () -> Unit,
-    onRestore: (() -> Unit)?,
-) {
-    val item = group.primary
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(group.title?.let { if (group.count > 1) "$it (${group.count})" else it } ?: item.appLabel) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
-                Text(item.appLabel, style = MaterialTheme.typography.labelLarge)
-                group.items.sortedByDescending { it.postedAtMillis }.forEach { groupedItem ->
-                    if (!groupedItem.text.isNullOrBlank()) {
-                        Text(groupedItem.text)
-                    }
+                IconButton(onClick = onArchive) {
+                    Icon(
+                        if (archiveLabel == "Restore") Icons.Filled.Restore else Icons.Filled.Archive,
+                        contentDescription = archiveLabel,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
-                Text(formatDateTime(item.postedAtMillis), color = MaterialTheme.colorScheme.onSurfaceVariant)
-                item.channelId?.let { Text("Channel: $it", color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
-        },
-        confirmButton = {
-            Button(onClick = onOpenOriginal) { Text("Open app/action") }
-        },
-        dismissButton = {
-            Row {
-                TextButton(onClick = onArchive) { Text(if (item.isArchived) "Restore" else "Archive") }
-                onRestore?.let { TextButton(onClick = it) { Text("Restore") } }
-                TextButton(onClick = onDismiss) { Text("Close") }
-            }
-        },
-    )
+        }
+    }
 }
 
 private fun openOriginalNotification(context: Context, item: NotificationEntity) {
@@ -1558,8 +1418,7 @@ private fun AppRuleCard(
     var expanded by remember(appRule.app.packageName) { mutableStateOf(false) }
     Card(
         modifier = Modifier
-            .fillMaxWidth()
-            .animateContentSize(),
+            .fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
         shape = MaterialTheme.shapes.medium,
     ) {
@@ -1790,7 +1649,7 @@ private fun BatchScheduleCard(
     var expanded by remember(schedule.id) { mutableStateOf(false) }
 
     Card(
-        modifier = Modifier.fillMaxWidth().animateContentSize(),
+        modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
         shape = MaterialTheme.shapes.large,
     ) {

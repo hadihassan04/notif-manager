@@ -40,6 +40,19 @@ data class NotificationEntity(
     val isArchived: Boolean = false,
 )
 
+data class NotificationPackageSummary(
+    val packageName: String,
+    val appLabel: String,
+    val notificationCount: Int,
+)
+
+data class NotificationChannelSummary(
+    val packageName: String,
+    val channelId: String,
+    val channelName: String,
+    val notificationCount: Int,
+)
+
 @Entity(
     tableName = "app_rules",
     indices = [Index(value = ["packageName"], unique = true)],

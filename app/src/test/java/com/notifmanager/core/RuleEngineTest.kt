@@ -37,6 +37,21 @@ class RuleEngineTest {
     }
 
     @Test
+    fun instantDefaultAllowsSystemSourcesThroughDuringHoldWindow() {
+        val decision = engine.decide(
+            incoming = incomingAt(hour = 15),
+            schedules = listOf(schedule),
+            appRules = emptyList(),
+            channelRules = emptyList(),
+            defaultDeliveryMode = DeliveryMode.INSTANT,
+        )
+
+        assertEquals(DeliveryMode.INSTANT, decision.deliveryMode)
+        assertEquals(RuleSource.DEFAULT, decision.ruleSource)
+        assertEquals(null, decision.batchId)
+    }
+
+    @Test
     fun appInstantRuleWinsOverDefaultBatching() {
         val decision = engine.decide(
             incoming = incomingAt(hour = 15),

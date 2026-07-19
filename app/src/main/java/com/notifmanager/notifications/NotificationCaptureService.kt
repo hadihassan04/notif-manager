@@ -13,13 +13,25 @@ import kotlinx.coroutines.launch
 
 class NotificationCaptureService : NotificationListenerService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val canceler: (String) -> Unit = { key -> cancelNotification(key) }
+
+    override fun onListenerConnected() {
+        super.onListenerConnected()
+        NotificationStatusController.register(canceler)
+    }
+
+    override fun onListenerDisconnected() {
+        NotificationStatusController.unregister(canceler)
+        super.onListenerDisconnected()
+    }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         if (sbn.packageName == packageName) return
         val extras = sbn.notification.extras
         val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()
         val text = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()
-        if (isIgnoredNotification(sbn.packageName, title, text)) return
+        val appProfile = NotificationCaptureFilter.appProfile(packageManager, sbn.packageName)
+        if (!NotificationCaptureFilter.shouldStore(sbn, appProfile, title, text)) return
 
         PendingIntentRegistry.put(sbn.key, sbn.notification.contentIntent)
         val incoming = IncomingNotification(
@@ -32,6 +44,7 @@ class NotificationCaptureService : NotificationListenerService() {
             channelName = sbn.notification.channelId,
             category = sbn.notification.category,
             postedAtMillis = sbn.postTime,
+            batchesByDefault = appProfile.batchesByDefault,
         )
 
         scope.launch {
@@ -47,12 +60,5 @@ class NotificationCaptureService : NotificationListenerService() {
             val info = packageManager.getApplicationInfo(packageName, 0)
             info.loadLabel(packageManager).toString()
         }.getOrDefault(packageName)
-    }
-
-    private fun isIgnoredNotification(packageName: String, title: String?, text: String?): Boolean {
-        if (!packageName.contains("whatsapp", ignoreCase = true)) return false
-        val content = listOfNotNull(title, text).joinToString(" ").lowercase()
-        return content.contains("checking for new messages") ||
-            content.contains("checking for messages")
     }
 }

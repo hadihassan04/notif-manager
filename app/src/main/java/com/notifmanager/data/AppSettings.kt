@@ -35,6 +35,10 @@ class AppSettings(private val context: Context) {
         prefs[SETUP_DISMISSED_ONCE] ?: false
     }
 
+    val nonBatchableDefaultsNormalized: Flow<Boolean> = context.settingsDataStore.data.map { prefs ->
+        prefs[NON_BATCHABLE_DEFAULTS_NORMALIZED] ?: false
+    }
+
     suspend fun setDynamicColorEnabled(enabled: Boolean) {
         context.settingsDataStore.edit { prefs ->
             prefs[DYNAMIC_COLOR_ENABLED] = enabled
@@ -71,6 +75,12 @@ class AppSettings(private val context: Context) {
         }
     }
 
+    suspend fun setNonBatchableDefaultsNormalized(normalized: Boolean) {
+        context.settingsDataStore.edit { prefs ->
+            prefs[NON_BATCHABLE_DEFAULTS_NORMALIZED] = normalized
+        }
+    }
+
     companion object {
         const val DEFAULT_HISTORY_RETENTION_DAYS = 30
         const val RETENTION_NEVER = 0
@@ -81,5 +91,6 @@ class AppSettings(private val context: Context) {
         val ONBOARDING_COMPLETED = booleanPreferencesKey("onboarding_completed")
         val PAUSE_BATCHING = booleanPreferencesKey("pause_batching")
         val SETUP_DISMISSED_ONCE = booleanPreferencesKey("setup_dismissed_once")
+        val NON_BATCHABLE_DEFAULTS_NORMALIZED = booleanPreferencesKey("non_batchable_defaults_normalized")
     }
 }
