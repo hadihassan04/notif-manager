@@ -26,6 +26,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -101,8 +102,11 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -119,10 +123,14 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -130,9 +138,13 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.drawable.toBitmap
 import androidx.core.net.toUri
+import androidx.core.view.WindowCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
@@ -142,6 +154,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.notifmanager.core.Insights
 import com.notifmanager.core.InsightsCalculator
+import com.notifmanager.core.OpenHoursCalculator
 import com.notifmanager.core.ScheduleCalculator
 import com.notifmanager.data.AppRuleUi
 import com.notifmanager.data.AppSettings
@@ -153,6 +166,7 @@ import com.notifmanager.data.InstantWindowEntity
 import com.notifmanager.data.NotificationEntity
 import com.notifmanager.data.Repository
 import com.notifmanager.data.ScheduleRuleEntity
+import com.notifmanager.data.ThemeMode
 import com.notifmanager.notifications.PendingIntentRegistry
 import com.notifmanager.ui.theme.MdSpacing
 import com.notifmanager.ui.theme.NotifManagerTheme
@@ -181,7 +195,21 @@ class MainActivity : ComponentActivity() {
         setContent {
             val app = application as NotifManagerApp
             val dynamicColor by app.settings.dynamicColorEnabled.collectAsStateWithLifecycle(initialValue = true)
-            NotifManagerTheme(dynamicColor = dynamicColor) {
+            val themeMode by app.settings.themeMode.collectAsStateWithLifecycle(initialValue = ThemeMode.SYSTEM)
+            val systemDark = isSystemInDarkTheme()
+            val darkTheme = when (themeMode) {
+                ThemeMode.SYSTEM -> systemDark
+                ThemeMode.LIGHT -> false
+                ThemeMode.DARK -> true
+            }
+            NotifManagerTheme(darkTheme = darkTheme, dynamicColor = dynamicColor) {
+                val background = MaterialTheme.colorScheme.background.toArgb()
+                SideEffect {
+                    window.decorView.setBackgroundColor(background)
+                    val insetsController = WindowCompat.getInsetsController(window, window.decorView)
+                    insetsController.isAppearanceLightStatusBars = !darkTheme
+                    insetsController.isAppearanceLightNavigationBars = !darkTheme
+                }
                 val viewModel: MainViewModel = viewModel(
                     factory = MainViewModel.factory(app.repository, app.settings),
                 )
@@ -254,10 +282,15 @@ class MainViewModel(
         SharingStarted.WhileSubscribed(5_000),
         true,
     )
-    val pauseBatching: StateFlow<Boolean> = settings.pauseBatching.stateIn(
+    val themeMode: StateFlow<ThemeMode> = settings.themeMode.stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5_000),
-        false,
+        ThemeMode.SYSTEM,
+    )
+    val temporaryOpenUntilMillis: StateFlow<Long> = settings.temporaryOpenUntilMillis.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5_000),
+        0L,
     )
     val onboardingCompleted: StateFlow<Boolean> = settings.onboardingCompleted.stateIn(
         viewModelScope,
@@ -272,8 +305,7 @@ class MainViewModel(
 
     init {
         viewModelScope.launch {
-            repository.normalizeNonBatchableDefaults()
-            repository.reschedule()
+            repository.initialize()
             repository.cleanupHistory(historyRetentionDays.value)
         }
     }
@@ -348,8 +380,16 @@ class MainViewModel(
         viewModelScope.launch { settings.setDynamicColorEnabled(enabled) }
     }
 
-    fun setPauseBatching(paused: Boolean) {
-        viewModelScope.launch { settings.setPauseBatching(paused) }
+    fun setThemeMode(mode: ThemeMode) {
+        viewModelScope.launch { settings.setThemeMode(mode) }
+    }
+
+    fun startTemporaryOpen(untilMillis: Long) {
+        viewModelScope.launch { repository.startTemporaryOpen(untilMillis) }
+    }
+
+    fun endTemporaryOpen() {
+        viewModelScope.launch { repository.endTemporaryOpen() }
     }
 
     fun setHistoryRetentionDays(days: Int) {
@@ -369,7 +409,10 @@ class MainViewModel(
 
     fun completeOnboarding(instantApps: List<InstalledApp> = emptyList()) {
         viewModelScope.launch {
-            if (instantApps.isNotEmpty()) repository.bulkSetInstant(instantApps)
+            repository.applyPrioritySelection(
+                apps = installedApps.value,
+                priorityPackages = instantApps.mapTo(mutableSetOf()) { it.packageName },
+            )
             settings.setOnboardingCompleted(true)
             settings.setSetupDismissedOnce(true)
         }
@@ -392,10 +435,9 @@ class MainViewModel(
 }
 
 private enum class Destination(val route: String, val label: String, val icon: ImageVector) {
-    Inbox("inbox", "Notifs", Icons.Filled.Inbox),
+    Inbox("inbox", "Inbox", Icons.Filled.Inbox),
     Schedule("schedule", "Schedule", Icons.Filled.Schedule),
-    Rules("rules", "Rules", Icons.Filled.Tune),
-    Insights("insights", "Insights", Icons.Filled.Insights),
+    Priority("priority", "Priority", Icons.Filled.Tune),
     Settings("settings", "Settings", Icons.Filled.Settings),
 }
 
@@ -409,7 +451,14 @@ private fun NotifManagerApp(
     val onboardingCompleted by viewModel.onboardingCompleted.collectAsStateWithLifecycle()
     if (!onboardingCompleted) {
         val installedApps by viewModel.installedApps.collectAsStateWithLifecycle()
-        OnboardingScreen(installedApps, viewModel::completeOnboarding)
+        val schedules by viewModel.schedules.collectAsStateWithLifecycle()
+        OnboardingScreen(
+            installedApps = installedApps,
+            schedules = schedules,
+            onAddSchedule = viewModel::addSchedule,
+            onUpdateSchedule = viewModel::updateSchedule,
+            onComplete = viewModel::completeOnboarding,
+        )
         return
     }
 
@@ -418,9 +467,20 @@ private fun NotifManagerApp(
     val backStack by navController.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route ?: Destination.Inbox.route
     val topLevel = Destination.entries.firstOrNull { it.route == currentRoute }
-    val title = topLevel?.label ?: "Notifs"
-    val pauseBatching by viewModel.pauseBatching.collectAsStateWithLifecycle()
-    var showPauseDialog by remember { mutableStateOf(false) }
+    val title = topLevel?.label ?: "Inbox"
+    val schedules by viewModel.schedules.collectAsStateWithLifecycle()
+    val openHours by viewModel.instantWindows.collectAsStateWithLifecycle()
+    val temporaryOpenUntil by viewModel.temporaryOpenUntilMillis.collectAsStateWithLifecycle()
+    var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(30_000L)
+            nowMillis = System.currentTimeMillis()
+        }
+    }
+    val temporaryOpen = temporaryOpenUntil > nowMillis
+    val scheduledOpen = remember(openHours, nowMillis) { OpenHoursCalculator().isOpenAt(nowMillis, openHours) }
+    var showTemporaryOpenDialog by remember { mutableStateOf(false) }
     var showScheduleAddDialog by remember { mutableStateOf(false) }
     var requestedBatchExpansion by remember { mutableStateOf<String?>(null) }
 
@@ -446,19 +506,24 @@ private fun NotifManagerApp(
                         }
                     },
                     actions = {
-                        IconButton(
-                            onClick = {
-                                if (pauseBatching) {
-                                    viewModel.setPauseBatching(false)
-                                } else {
-                                    showPauseDialog = true
+                        if (currentRoute != Destination.Settings.route) {
+                            if (scheduledOpen && !temporaryOpen) {
+                                Text(
+                                    "Open now",
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.tertiary,
+                                    modifier = Modifier.padding(horizontal = MdSpacing.xs),
+                                )
+                            } else {
+                                TextButton(
+                                    onClick = {
+                                        if (temporaryOpen) viewModel.endTemporaryOpen()
+                                        else showTemporaryOpenDialog = true
+                                    },
+                                ) {
+                                    Text(if (temporaryOpen) "End open" else "Allow all")
                                 }
-                            },
-                        ) {
-                            Icon(
-                                if (pauseBatching) Icons.Filled.PlayCircle else Icons.Filled.PauseCircle,
-                                contentDescription = if (pauseBatching) "Resume batching" else "Pause batching",
-                            )
+                            }
                         }
                         if (currentRoute != Destination.Settings.route) {
                             IconButton(onClick = { navigateTopLevel(navController, Destination.Settings.route) }) {
@@ -485,7 +550,7 @@ private fun NotifManagerApp(
                     exit = fadeOut() + shrinkVertically(),
                 ) {
                     FloatingActionButton(onClick = { showScheduleAddDialog = true }) {
-                        Icon(Icons.Filled.Add, contentDescription = "Add batch")
+                        Icon(Icons.Filled.Add, contentDescription = "Add schedule item")
                     }
                 }
             },
@@ -520,27 +585,26 @@ private fun NotifManagerApp(
                             onArchiveHistory = viewModel::archiveHistory,
                         )
                     }
-                    composable(Destination.Insights.route) {
-                        val insights by viewModel.insights.collectAsStateWithLifecycle()
-                        InsightsScreen(insights)
-                    }
-                    composable(Destination.Rules.route) {
+                    composable(Destination.Priority.route) {
                         val rules by viewModel.rulesUi.collectAsStateWithLifecycle()
                         val showSystemApps by viewModel.showSystemApps.collectAsStateWithLifecycle()
                         RulesScreen(
                             rules = rules,
                             showSystemApps = showSystemApps,
-                            onShowSystemApps = viewModel::setShowSystemApps,
                             onSetAppMode = viewModel::setAppMode,
                             onSetChannelMode = viewModel::setChannelMode,
                         )
                     }
                     composable(Destination.Schedule.route) {
                         val schedules by viewModel.schedules.collectAsStateWithLifecycle()
-                        val instantWindows by viewModel.instantWindows.collectAsStateWithLifecycle()
+                        val inbox by viewModel.inbox.collectAsStateWithLifecycle()
                         ScheduleScreen(
                             schedules = schedules,
-                            instantWindows = instantWindows,
+                            instantWindows = openHours,
+                            batches = inbox,
+                            temporaryOpenUntilMillis = temporaryOpenUntil,
+                            onStartTemporaryOpen = viewModel::startTemporaryOpen,
+                            onEndTemporaryOpen = viewModel::endTemporaryOpen,
                             onUpdate = viewModel::updateSchedule,
                             onDelete = viewModel::deleteSchedule,
                             onUpdateInstantWindow = viewModel::updateInstantWindow,
@@ -550,13 +614,16 @@ private fun NotifManagerApp(
                     composable(Destination.Settings.route) {
                         val showSystemApps by viewModel.showSystemApps.collectAsStateWithLifecycle()
                         val dynamicColor by viewModel.dynamicColorEnabled.collectAsStateWithLifecycle()
+                        val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
                         val retentionDays by viewModel.historyRetentionDays.collectAsStateWithLifecycle()
                         SettingsScreen(
                             showSystemApps = showSystemApps,
                             dynamicColor = dynamicColor,
+                            themeMode = themeMode,
                             retentionDays = retentionDays,
                             onShowSystemApps = viewModel::setShowSystemApps,
                             onDynamicColor = viewModel::setDynamicColorEnabled,
+                            onThemeMode = viewModel::setThemeMode,
                             onRetentionDays = viewModel::setHistoryRetentionDays,
                             onCleanupNow = viewModel::cleanupHistoryNow,
                             onReplayOnboarding = viewModel::replayOnboarding,
@@ -567,21 +634,37 @@ private fun NotifManagerApp(
         }
     }
 
-    if (showPauseDialog) {
+    if (showTemporaryOpenDialog) {
         AlertDialog(
-            onDismissRequest = { showPauseDialog = false },
-            title = { Text("Pause batching?") },
-            text = { Text("All new notifications will come instantly until you resume batching.") },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        viewModel.setPauseBatching(true)
-                        showPauseDialog = false
-                    },
-                ) { Text("Pause") }
+            onDismissRequest = { showTemporaryOpenDialog = false },
+            title = { Text("Allow all notifications") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
+                    Text("Waiting notifications will be delivered now. New notifications can interrupt you until this Open period ends.")
+                    listOf(
+                        "30 minutes" to nowMillis + 30L * 60L * 1000L,
+                        "1 hour" to nowMillis + 60L * 60L * 1000L,
+                        "Until next delivery" to (
+                            ScheduleCalculator().nextReleases(nowMillis, schedules)
+                                .minByOrNull { it.triggerAtMillis }
+                                ?.triggerAtMillis
+                                ?: nowMillis + 60L * 60L * 1000L
+                            ),
+                    ).forEach { (label, until) ->
+                        AddScheduleChoice(
+                            title = label,
+                            body = "Open until ${formatTime(until)}",
+                            icon = Icons.Filled.NotificationsActive,
+                            onClick = {
+                                viewModel.startTemporaryOpen(until)
+                                showTemporaryOpenDialog = false
+                            },
+                        )
+                    }
+                }
             },
-            dismissButton = {
-                TextButton(onClick = { showPauseDialog = false }) { Text("Cancel") }
+            confirmButton = {
+                TextButton(onClick = { showTemporaryOpenDialog = false }) { Text("Cancel") }
             },
         )
     }
@@ -598,8 +681,8 @@ private fun NotifManagerApp(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     AddScheduleChoice(
-                        title = "Batch time",
-                        body = "Deliver held notifications at a specific time.",
+                        title = "Delivery time",
+                        body = "Release everything waiting at a time you choose.",
                         icon = Icons.Filled.Schedule,
                         onClick = {
                             viewModel.addSchedule()
@@ -607,8 +690,8 @@ private fun NotifManagerApp(
                         },
                     )
                     AddScheduleChoice(
-                        title = "Instant window",
-                        body = "Let notifications come through between two times.",
+                        title = "Open hours",
+                        body = "Release the queue and allow routine interruptions.",
                         icon = Icons.Filled.NotificationsActive,
                         onClick = {
                             viewModel.addInstantWindow()
@@ -743,11 +826,12 @@ private fun NotificationsScreen(
         onBatchExpansionConsumed()
     }
 
-    val waitingBatch = remember(batches, nowMillis) {
+    val waitingBatches = remember(batches, nowMillis) {
         batches
             .filter { it.releaseAtMillis > nowMillis }
-            .minByOrNull { it.releaseAtMillis }
+            .sortedBy { it.releaseAtMillis }
     }
+    val waitingBatch = waitingBatches.firstOrNull()
     val deliveredBatches = remember(batches, nowMillis) {
         batches.filter { it.releaseAtMillis in 1..nowMillis }
     }
@@ -780,31 +864,31 @@ private fun NotificationsScreen(
             }
         }
 
-        if (waitingBatch != null) {
+        if (waitingBatches.isNotEmpty()) {
             item {
                 Text("Waiting", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            item(key = "waiting_${waitingBatch.batchId}") {
-                val expanded = waitingBatch.batchId in expandedBatchIds
+            items(waitingBatches, key = { "waiting_${it.batchId}" }) { batch ->
+                val expanded = batch.batchId in expandedBatchIds
                 BatchSummaryCard(
-                    batch = waitingBatch,
+                    batch = batch,
                     expanded = expanded,
-                    isNext = true,
+                    isNext = batch.batchId == waitingBatch?.batchId,
                     onToggle = {
-                        if (expanded) expandedBatchIds.remove(waitingBatch.batchId) else expandedBatchIds.add(waitingBatch.batchId)
+                        if (expanded) expandedBatchIds.remove(batch.batchId) else expandedBatchIds.add(batch.batchId)
                     },
                     onArchiveBatch = {
-                        val keys = waitingBatch.notificationKeys()
+                        val keys = batch.notificationKeys()
                         onArchiveNotifications(keys)
                         scope.launch {
-                            val result = snackbarHostState.showSnackbar("Batch cleared", "Undo")
+                            val result = snackbarHostState.showSnackbar("Delivery archived", "Undo")
                             if (result.name == "ActionPerformed") onUnarchiveNotifications(keys)
                         }
                     },
                     onArchiveNotifications = { keys ->
                         onArchiveNotifications(keys)
                         scope.launch {
-                            val result = snackbarHostState.showSnackbar("Notification cleared", "Undo")
+                            val result = snackbarHostState.showSnackbar("Notification archived", "Undo")
                             if (result.name == "ActionPerformed") onUnarchiveNotifications(keys)
                         }
                     },
@@ -828,14 +912,14 @@ private fun NotificationsScreen(
                         val keys = currentDeliveredBatch.notificationKeys()
                         onArchiveNotifications(keys)
                         scope.launch {
-                            val result = snackbarHostState.showSnackbar("Batch cleared", "Undo")
+                            val result = snackbarHostState.showSnackbar("Delivery archived", "Undo")
                             if (result.name == "ActionPerformed") onUnarchiveNotifications(keys)
                         }
                     },
                     onArchiveNotifications = { keys ->
                         onArchiveNotifications(keys)
                         scope.launch {
-                            val result = snackbarHostState.showSnackbar("Notification cleared", "Undo")
+                            val result = snackbarHostState.showSnackbar("Notification archived", "Undo")
                             if (result.name == "ActionPerformed") onUnarchiveNotifications(keys)
                         }
                     },
@@ -853,10 +937,10 @@ private fun NotificationsScreen(
                             .map { it.notificationKey }
                         scope.launch {
                             onArchiveHistory(keys)
-                            val result = snackbarHostState.showSnackbar("History cleared", "Undo")
+                            val result = snackbarHostState.showSnackbar("History archived", "Undo")
                             if (result.name == "ActionPerformed") onUnarchiveNotifications(keys)
                         }
-                    }) { Text("Clear all") }
+                    }) { Text("Archive all") }
                 }
             }
         }
@@ -881,11 +965,11 @@ private fun NotificationsScreen(
                     ),
                 ),
                 group = group,
-                archiveLabel = "Clear",
+                archiveLabel = "Archive",
                 onArchive = {
                     onArchiveNotifications(group.notificationKeys)
                     scope.launch {
-                        val result = snackbarHostState.showSnackbar("Notification cleared", "Undo")
+                        val result = snackbarHostState.showSnackbar("Notification archived", "Undo")
                         if (result.name == "ActionPerformed") onUnarchiveNotifications(group.notificationKeys)
                     }
                 },
@@ -995,7 +1079,7 @@ private fun NextBatchCard(waitingBatch: InboxBatch?, schedules: List<ScheduleRul
         ) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    "Next batch",
+                    "Next delivery",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
                 )
@@ -1075,7 +1159,15 @@ private fun BatchSummaryCard(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(MdSpacing.sm),
             ) {
-                FlowerBadge(count = batch.notificationCount)
+                Surface(
+                    modifier = Modifier.size(48.dp),
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(batch.notificationCount.toString(), style = MaterialTheme.typography.titleMedium)
+                    }
+                }
                 Column(Modifier.weight(1f)) {
                     Text(batch.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Text(
@@ -1096,7 +1188,7 @@ private fun BatchSummaryCard(
                 }
                 if (showToggle) {
                     IconButton(onClick = onToggle) {
-                        Icon(if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore, contentDescription = "Toggle batch")
+                        Icon(if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore, contentDescription = "Toggle delivery")
                     }
                 }
             }
@@ -1107,14 +1199,16 @@ private fun BatchSummaryCard(
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
                     previewGroups.forEach { group ->
-                        NotificationRow(
-                            group = group,
-                            archiveLabel = "Clear",
-                            onArchive = { onArchiveNotifications(group.notificationKeys) },
-                        )
+                        key(group.key) {
+                            NotificationRow(
+                                group = group,
+                                archiveLabel = "Archive",
+                                onArchive = { onArchiveNotifications(group.notificationKeys) },
+                            )
+                        }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
-                        OutlinedButton(onClick = onArchiveBatch) { Text("Clear batch") }
+                        OutlinedButton(onClick = onArchiveBatch) { Text("Archive delivery") }
                     }
                 }
             }
@@ -1149,7 +1243,7 @@ private fun NotificationRow(
         state = dismissState,
         modifier = modifier.fillMaxWidth(),
         enableDismissFromStartToEnd = swipeEnabled,
-        enableDismissFromEndToStart = swipeEnabled,
+        enableDismissFromEndToStart = false,
         backgroundContent = {
             val alignment = when (dismissState.dismissDirection) {
                 SwipeToDismissBoxValue.StartToEnd -> Alignment.CenterStart
@@ -1180,7 +1274,22 @@ private fun NotificationRow(
         },
     ) {
         Surface(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .then(
+                    if (swipeEnabled) {
+                        Modifier.semantics {
+                            customActions = listOf(
+                                CustomAccessibilityAction("Archive") {
+                                    onArchive()
+                                    true
+                                },
+                            )
+                        }
+                    } else {
+                        Modifier
+                    },
+                ),
             color = MaterialTheme.colorScheme.surface,
             shape = MaterialTheme.shapes.medium,
             tonalElevation = 1.dp,
@@ -1215,17 +1324,19 @@ private fun NotificationRow(
                         )
                     }
                     Text(
-                        "${formatTime(item.postedAtMillis)} · ${item.deliveryMode.name.lowercase()}",
+                        "${formatTime(item.postedAtMillis)} · ${item.deliveryMode.label()}",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                IconButton(onClick = onArchive) {
-                    Icon(
-                        if (archiveLabel == "Restore") Icons.Filled.Restore else Icons.Filled.Archive,
-                        contentDescription = archiveLabel,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                if (!swipeEnabled) {
+                    IconButton(onClick = onArchive) {
+                        Icon(
+                            Icons.Filled.Restore,
+                            contentDescription = archiveLabel,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
         }
@@ -1243,19 +1354,16 @@ private fun openOriginalNotification(context: Context, item: NotificationEntity)
 private fun RulesScreen(
     rules: List<AppRuleUi>,
     showSystemApps: Boolean,
-    onShowSystemApps: (Boolean) -> Unit,
     onSetAppMode: (InstalledApp, DeliveryMode) -> Unit,
     onSetChannelMode: (ChannelRuleUi, DeliveryMode?) -> Unit,
 ) {
     var query by remember { mutableStateOf("") }
     var modeFilter by remember { mutableStateOf<DeliveryMode?>(null) }
-    var overridesOnly by remember { mutableStateOf(false) }
-    val visibleRules = remember(rules, showSystemApps, query, modeFilter, overridesOnly) {
+    val visibleRules = remember(rules, showSystemApps, query, modeFilter) {
         rules
             .filter { showSystemApps || !it.app.isSystemApp }
             .filter { it.matches(query) }
             .filter { modeFilter == null || it.app.mode == modeFilter || it.channels.any { channel -> channel.mode == modeFilter } }
-            .filter { !overridesOnly || it.channels.any { channel -> channel.mode != null } }
     }
 
     LazyColumn(
@@ -1263,22 +1371,23 @@ private fun RulesScreen(
         contentPadding = PaddingValues(MdSpacing.sm),
         verticalArrangement = Arrangement.spacedBy(MdSpacing.sm),
     ) {
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
+                Text("Choose what can interrupt you", style = MaterialTheme.typography.headlineSmall)
+                Text(
+                    "Priority apps arrive immediately. Routine apps wait for a delivery time unless Open hours are active.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
         item { SearchField(query, onQueryChange = { query = it }, placeholder = "Search apps and channels") }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
-                FilterChip(selected = modeFilter == null && !overridesOnly, onClick = { modeFilter = null; overridesOnly = false }, label = { Text("All") })
-                FilterChip(selected = modeFilter == DeliveryMode.BATCH, onClick = { modeFilter = DeliveryMode.BATCH; overridesOnly = false }, label = { Text("Batched") })
-                FilterChip(selected = modeFilter == DeliveryMode.INSTANT, onClick = { modeFilter = DeliveryMode.INSTANT; overridesOnly = false }, label = { Text("Instant") })
-                FilterChip(selected = overridesOnly, onClick = { overridesOnly = !overridesOnly }, label = { Text("Custom") })
-                FilterChip(selected = showSystemApps, onClick = { onShowSystemApps(!showSystemApps) }, label = { Text("System") })
+                FilterChip(selected = modeFilter == null, onClick = { modeFilter = null }, label = { Text("All") })
+                FilterChip(selected = modeFilter == DeliveryMode.INSTANT, onClick = { modeFilter = DeliveryMode.INSTANT }, label = { Text("Priority") })
+                FilterChip(selected = modeFilter == DeliveryMode.BATCH, onClick = { modeFilter = DeliveryMode.BATCH }, label = { Text("Routine") })
             }
-        }
-        item {
-            Text(
-                "Sorted by recommendation and notification volume.",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
         if (visibleRules.isEmpty()) {
             item { EmptyState("No apps found", "Try a different search or enable system apps.") }
@@ -1312,9 +1421,9 @@ private fun InstantWindowCard(
                 horizontalArrangement = Arrangement.spacedBy(MdSpacing.sm),
             ) {
                 Column(Modifier.weight(1f)) {
-                    Text("Instant window", style = MaterialTheme.typography.titleMedium)
+                    Text("Open hours", style = MaterialTheme.typography.titleMedium)
                     Text(
-                        "${formatMinutes(window.startMinutes)} to ${formatMinutes(window.endMinutes)} · notifications come instantly",
+                        "${formatMinutes(window.startMinutes)} to ${formatMinutes(window.endMinutes)} · releases waiting notifications",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -1338,6 +1447,12 @@ private fun InstantWindowCard(
                     modifier = Modifier.weight(1f),
                 )
             }
+            WeekdaySelector(
+                activeDaysMask = window.activeDaysMask,
+                onChanged = { onUpdate(window.copy(activeDaysMask = it)) },
+                title = "Open days",
+                body = "The queue is released when Open hours begin on these days.",
+            )
             if (window.id > 0) {
                 TextButton(
                     onClick = { onDelete(window.id) },
@@ -1345,7 +1460,7 @@ private fun InstantWindowCard(
                 ) {
                     Icon(Icons.Filled.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.size(MdSpacing.xs))
-                    Text("Remove instant window")
+                    Text("Remove Open hours")
                 }
             }
         }
@@ -1360,7 +1475,7 @@ private fun InstantWindowCard(
         )
         AlertDialog(
             onDismissRequest = { editing = null },
-            title = { Text(if (target == InstantWindowTimeTarget.Start) "Instant start" else "Instant end") },
+            title = { Text(if (target == InstantWindowTimeTarget.Start) "Open hours start" else "Open hours end") },
             text = { TimePicker(state = state) },
             confirmButton = {
                 Button(
@@ -1506,7 +1621,7 @@ private fun ChannelRuleRow(
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                "${channel.notificationCount} captured · ${channel.mode?.label() ?: "Same as app (${appMode.label()})"}",
+                "${channel.notificationCount} captured · ${channel.mode?.label() ?: "Uses app setting (${appMode.label()})"}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 2,
@@ -1525,8 +1640,8 @@ private fun DeliveryModeSelector(value: DeliveryMode, onValue: (DeliveryMode) ->
             .horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs),
     ) {
-        FilterChip(selected = value == DeliveryMode.BATCH, onClick = { onValue(DeliveryMode.BATCH) }, label = { Text("Batch") })
-        FilterChip(selected = value == DeliveryMode.INSTANT, onClick = { onValue(DeliveryMode.INSTANT) }, label = { Text("Instant") })
+        FilterChip(selected = value == DeliveryMode.BATCH, onClick = { onValue(DeliveryMode.BATCH) }, label = { Text("Routine") })
+        FilterChip(selected = value == DeliveryMode.INSTANT, onClick = { onValue(DeliveryMode.INSTANT) }, label = { Text("Priority") })
     }
 }
 
@@ -1535,20 +1650,24 @@ private fun ChannelModeMenu(value: DeliveryMode?, onValue: (DeliveryMode?) -> Un
     var expanded by remember { mutableStateOf(false) }
     Box {
         OutlinedButton(onClick = { expanded = true }) {
-            Text(value?.label() ?: "Same as app")
+            Text(value?.label() ?: "Uses app setting")
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            DropdownMenuItem(text = { Text("Same as app") }, onClick = { onValue(null); expanded = false })
-            DropdownMenuItem(text = { Text("Batched") }, onClick = { onValue(DeliveryMode.BATCH); expanded = false })
-            DropdownMenuItem(text = { Text("Instant") }, onClick = { onValue(DeliveryMode.INSTANT); expanded = false })
+            DropdownMenuItem(text = { Text("Uses app setting") }, onClick = { onValue(null); expanded = false })
+            DropdownMenuItem(text = { Text("Routine") }, onClick = { onValue(DeliveryMode.BATCH); expanded = false })
+            DropdownMenuItem(text = { Text("Priority") }, onClick = { onValue(DeliveryMode.INSTANT); expanded = false })
         }
     }
 }
 
 @Composable
-private fun DayTimeline(schedules: List<ScheduleRuleEntity>) {
+private fun DayTimeline(
+    schedules: List<ScheduleRuleEntity>,
+    openHours: List<InstantWindowEntity>,
+) {
     val primary = MaterialTheme.colorScheme.primary
     val track = MaterialTheme.colorScheme.surfaceContainerHighest
+    val open = MaterialTheme.colorScheme.tertiary
     val disabled = MaterialTheme.colorScheme.onSurfaceVariant
     val needle = MaterialTheme.colorScheme.onSurface
 
@@ -1564,7 +1683,7 @@ private fun DayTimeline(schedules: List<ScheduleRuleEntity>) {
                 .fillMaxWidth()
                 .height(44.dp),
         ) {
-            val trackH = 4.dp.toPx()
+            val trackH = 12.dp.toPx()
             val cy = size.height / 2f
             val dotR = 10.dp.toPx()
 
@@ -1575,7 +1694,27 @@ private fun DayTimeline(schedules: List<ScheduleRuleEntity>) {
                 cornerRadius = CornerRadius(trackH / 2),
             )
 
-            fun minutesToX(minutes: Int) = size.width * ((minutes - 360 + 1440) % 1440 / 1440f)
+            fun minutesToX(minutes: Int) = size.width * (minutes.coerceIn(0, 1440) / 1440f)
+
+            fun drawOpenRange(startMinutes: Int, endMinutes: Int) {
+                val startX = minutesToX(startMinutes)
+                val endX = minutesToX(endMinutes)
+                drawRoundRect(
+                    color = open,
+                    topLeft = Offset(startX, cy - trackH / 2),
+                    size = Size((endX - startX).coerceAtLeast(1f), trackH),
+                    cornerRadius = CornerRadius(trackH / 2),
+                )
+            }
+
+            openHours.filter { it.isEnabled }.forEach { window ->
+                if (window.startMinutes < window.endMinutes) {
+                    drawOpenRange(window.startMinutes, window.endMinutes)
+                } else if (window.startMinutes > window.endMinutes) {
+                    drawOpenRange(window.startMinutes, 1440)
+                    drawOpenRange(0, window.endMinutes)
+                }
+            }
 
             schedules.filter { it.isEnabled }.forEach { schedule ->
                 drawCircle(color = primary, radius = dotR, center = Offset(minutesToX(schedule.releaseMinutes), cy))
@@ -1593,9 +1732,13 @@ private fun DayTimeline(schedules: List<ScheduleRuleEntity>) {
             )
         }
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            listOf("6 AM", "12 PM", "6 PM", "12 AM", "6 AM").forEach { label ->
+            listOf("12 AM", "6 AM", "12 PM", "6 PM", "12 AM").forEach { label ->
                 Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(MdSpacing.sm)) {
+            Text("● Delivery", style = MaterialTheme.typography.labelSmall, color = primary)
+            Text("━ Open", style = MaterialTheme.typography.labelSmall, color = open)
         }
     }
 }
@@ -1604,36 +1747,126 @@ private fun DayTimeline(schedules: List<ScheduleRuleEntity>) {
 private fun ScheduleScreen(
     schedules: List<ScheduleRuleEntity>,
     instantWindows: List<InstantWindowEntity>,
+    batches: List<InboxBatch>,
+    temporaryOpenUntilMillis: Long,
+    onStartTemporaryOpen: (Long) -> Unit,
+    onEndTemporaryOpen: () -> Unit,
     onUpdate: (ScheduleRuleEntity) -> Unit,
     onDelete: (Long) -> Unit,
     onUpdateInstantWindow: (InstantWindowEntity) -> Unit,
     onDeleteInstantWindow: (Long) -> Unit,
 ) {
+    var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(30_000L)
+            nowMillis = System.currentTimeMillis()
+        }
+    }
+    val scheduledOpen = remember(instantWindows, nowMillis) {
+        OpenHoursCalculator().isOpenAt(nowMillis, instantWindows)
+    }
+    val temporaryOpen = temporaryOpenUntilMillis > nowMillis
+    val isOpen = scheduledOpen || temporaryOpen
+    val nextDelivery = remember(schedules, nowMillis) {
+        ScheduleCalculator().nextReleases(nowMillis, schedules).minByOrNull { it.triggerAtMillis }
+    }
+    val waitingCount = remember(batches, nowMillis) {
+        batches.filter { it.releaseAtMillis == 0L || it.releaseAtMillis > nowMillis }.sumOf { it.notificationCount }
+    }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(MdSpacing.sm),
         verticalArrangement = Arrangement.spacedBy(MdSpacing.sm),
     ) {
-        if (instantWindows.isNotEmpty()) {
-            item {
-                Text("Instant windows", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            items(instantWindows, key = { "instant_${it.id}" }) { window ->
-                InstantWindowCard(
-                    window = window,
-                    onUpdate = onUpdateInstantWindow,
-                    onDelete = onDeleteInstantWindow,
-                )
+        item {
+            ScheduleStatusCard(
+                isOpen = isOpen,
+                temporaryOpen = temporaryOpen,
+                temporaryOpenUntilMillis = temporaryOpenUntilMillis,
+                waitingCount = waitingCount,
+                nextDeliveryMillis = nextDelivery?.triggerAtMillis,
+                onStartTemporaryOpen = { onStartTemporaryOpen(nowMillis + 60L * 60L * 1000L) },
+                onEndTemporaryOpen = onEndTemporaryOpen,
+            )
+        }
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
+                Text("Today", style = MaterialTheme.typography.titleMedium)
+                DayTimeline(schedules, instantWindows)
             }
         }
         item {
-            DayTimeline(schedules)
+            Text("Delivery times", style = MaterialTheme.typography.titleLarge)
         }
         if (schedules.isEmpty()) {
-            item { EmptyState("No delivery times", "Tap + to add a time when notifications will be delivered.") }
+            item {
+                EmptyState(
+                    "Add a delivery time",
+                    "Routine notifications need at least one safe release time. Tap + to add one.",
+                )
+            }
         }
         items(schedules, key = { "schedule_${it.id}" }) { schedule ->
             BatchScheduleCard(schedule, onUpdate, onDelete)
+        }
+        item {
+            Text("Open hours", style = MaterialTheme.typography.titleLarge)
+        }
+        if (instantWindows.isEmpty()) {
+            item {
+                Text(
+                    "No Open hours. Routine notifications wait for delivery times all day.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        items(instantWindows, key = { "open_${it.id}" }) { window ->
+            InstantWindowCard(
+                window = window,
+                onUpdate = onUpdateInstantWindow,
+                onDelete = onDeleteInstantWindow,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ScheduleStatusCard(
+    isOpen: Boolean,
+    temporaryOpen: Boolean,
+    temporaryOpenUntilMillis: Long,
+    waitingCount: Int,
+    nextDeliveryMillis: Long?,
+    onStartTemporaryOpen: () -> Unit,
+    onEndTemporaryOpen: () -> Unit,
+) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = if (isOpen) MaterialTheme.colorScheme.tertiaryContainer else MaterialTheme.colorScheme.primaryContainer,
+        ),
+        shape = MaterialTheme.shapes.large,
+    ) {
+        Column(
+            modifier = Modifier.padding(MdSpacing.md),
+            verticalArrangement = Arrangement.spacedBy(MdSpacing.xs),
+        ) {
+            Text(if (isOpen) "Open now" else "Waiting now", style = MaterialTheme.typography.headlineSmall)
+            Text(
+                when {
+                    isOpen && temporaryOpen -> "Routine notifications can interrupt you until ${formatTime(temporaryOpenUntilMillis)}."
+                    isOpen -> "Routine notifications can interrupt you during scheduled Open hours."
+                    nextDeliveryMillis != null -> "Next delivery ${formatDateTime(nextDeliveryMillis)} · $waitingCount waiting"
+                    else -> "$waitingCount waiting · add a delivery time to release them safely"
+                },
+                style = MaterialTheme.typography.bodyLarge,
+            )
+            if (temporaryOpen) {
+                OutlinedButton(onClick = onEndTemporaryOpen) { Text("End Open period") }
+            } else if (!isOpen) {
+                Button(onClick = onStartTemporaryOpen) { Text("Allow all for 1 hour") }
+            }
         }
     }
 }
@@ -1644,6 +1877,7 @@ private fun BatchScheduleCard(
     schedule: ScheduleRuleEntity,
     onUpdate: (ScheduleRuleEntity) -> Unit,
     onDelete: (Long) -> Unit,
+    allowDelete: Boolean = true,
 ) {
     var showTimePicker by remember(schedule.id) { mutableStateOf(false) }
     var expanded by remember(schedule.id) { mutableStateOf(false) }
@@ -1678,6 +1912,10 @@ private fun BatchScheduleCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                Switch(
+                    checked = schedule.isEnabled,
+                    onCheckedChange = { onUpdate(schedule.copy(isEnabled = it)) },
+                )
                 IconButton(onClick = { expanded = !expanded }) {
                     Icon(
                         if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
@@ -1692,17 +1930,18 @@ private fun BatchScheduleCard(
                 exit = fadeOut() + shrinkVertically(),
             ) {
                 Column(Modifier.padding(bottom = MdSpacing.sm), verticalArrangement = Arrangement.spacedBy(MdSpacing.sm)) {
-                    WeekdaySelector(schedule.activeDaysMask) { mask ->
-                        onUpdate(schedule.copy(activeDaysMask = mask))
-                    }
-                    AnimatedVisibility(visible = schedule.id > 0) {
+                    WeekdaySelector(
+                        activeDaysMask = schedule.activeDaysMask,
+                        onChanged = { mask -> onUpdate(schedule.copy(activeDaysMask = mask)) },
+                    )
+                    AnimatedVisibility(visible = allowDelete && schedule.id > 0) {
                         TextButton(
                             onClick = { onDelete(schedule.id) },
                             modifier = Modifier.fillMaxWidth(),
                         ) {
                             Icon(Icons.Filled.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.size(MdSpacing.xs))
-                            Text("Remove")
+                            Text("Remove delivery time")
                         }
                     }
                 }
@@ -1733,11 +1972,16 @@ private fun BatchScheduleCard(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun WeekdaySelector(activeDaysMask: Int, onChanged: (Int) -> Unit) {
+private fun WeekdaySelector(
+    activeDaysMask: Int,
+    onChanged: (Int) -> Unit,
+    title: String = "Delivery days",
+    body: String = "Waiting notifications are delivered on the selected days.",
+) {
     Column(verticalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
-        Text("Delivery days", style = MaterialTheme.typography.titleMedium)
+        Text(title, style = MaterialTheme.typography.titleMedium)
         Text(
-            "Notifications are batched only on selected days.",
+            body,
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -1770,38 +2014,42 @@ private fun WeekdaySelector(activeDaysMask: Int, onChanged: (Int) -> Unit) {
 private fun SettingsScreen(
     showSystemApps: Boolean,
     dynamicColor: Boolean,
+    themeMode: ThemeMode,
     retentionDays: Int,
     onShowSystemApps: (Boolean) -> Unit,
     onDynamicColor: (Boolean) -> Unit,
+    onThemeMode: (ThemeMode) -> Unit,
     onRetentionDays: (Int) -> Unit,
     onCleanupNow: () -> Unit,
     onReplayOnboarding: () -> Unit,
 ) {
     val context = LocalContext.current
-    val notificationLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
-    val canPost = rememberCanPostNotifications(context)
-    val listenerEnabled = rememberNotificationListenerEnabled(context)
-    val exactAlarmReady = rememberExactAlarmReady(context)
+    var permissionRefresh by remember { mutableLongStateOf(0L) }
+    val notificationLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        permissionRefresh++
+    }
+    val permissions = rememberPermissionStatus(context, permissionRefresh)
     val monetAvailable = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(MdSpacing.sm),
         verticalArrangement = Arrangement.spacedBy(MdSpacing.sm),
     ) {
+        item { SettingsSectionLabel("Setup") }
         item {
             PermissionCard(
                 title = "Notification access",
-                body = "Required to capture, hide, and batch notifications from other apps.",
-                ready = listenerEnabled,
+                body = "Required to hold and organize notifications from other apps.",
+                ready = permissions.listenerEnabled,
                 action = "Open settings",
                 onClick = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) },
             )
         }
         item {
             PermissionCard(
-                title = "Post notifications",
-                body = "Required so Notif Manager can notify you when held notifications are delivered.",
-                ready = canPost,
+                title = "Delivery notifications",
+                body = "Required so Notif Manager can tell you when waiting notifications are released.",
+                ready = permissions.canPost,
                 action = "Allow",
                 onClick = {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -1812,9 +2060,9 @@ private fun SettingsScreen(
         }
         item {
             PermissionCard(
-                title = "Exact timing",
-                body = "Allows delivery close to your configured delivery time.",
-                ready = exactAlarmReady,
+                title = "Precise delivery",
+                body = "Optional. Improves delivery accuracy; Android may deliver a little later without it.",
+                ready = permissions.exactAlarmReady,
                 action = "Open settings",
                 onClick = {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -1825,26 +2073,80 @@ private fun SettingsScreen(
                 },
             )
         }
-        item { SwitchRow("Show system apps", "Include system apps in Rules.", showSystemApps, onShowSystemApps) }
+        item { SettingsSectionLabel("Appearance") }
+        item { ThemeModeCard(themeMode, onThemeMode) }
         item {
             SwitchRow(
                 title = "Wallpaper colors",
                 body = if (monetAvailable) {
                     "Match the app theme to your Android wallpaper colors."
                 } else {
-                    "Available on Android 12 and newer. This device uses the default purple theme."
+                    "Available on Android 12 and newer. This device uses the Notif Manager palette."
                 },
                 checked = dynamicColor && monetAvailable,
                 enabled = monetAvailable,
                 onChecked = onDynamicColor,
             )
         }
+        item { SettingsSectionLabel("Notification management") }
+        item { SwitchRow("Show system apps", "Include system apps in Priority.", showSystemApps, onShowSystemApps) }
         item {
             RetentionCard(retentionDays = retentionDays, onRetentionDays = onRetentionDays, onCleanupNow = onCleanupNow)
         }
+        item { SettingsSectionLabel("Help") }
         item {
             OutlinedButton(onClick = onReplayOnboarding, modifier = Modifier.fillMaxWidth()) {
-                Text("Replay onboarding")
+                Text("Review setup")
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsSectionLabel(label: String) {
+    Text(
+        label,
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(top = MdSpacing.xs),
+    )
+}
+
+@Composable
+private fun ThemeModeCard(themeMode: ThemeMode, onThemeMode: (ThemeMode) -> Unit) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        shape = MaterialTheme.shapes.medium,
+    ) {
+        Column(
+            modifier = Modifier.padding(MdSpacing.sm),
+            verticalArrangement = Arrangement.spacedBy(MdSpacing.xs),
+        ) {
+            Text("Theme", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Choose an appearance or follow your Android setting.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs),
+            ) {
+                ThemeMode.entries.forEach { mode ->
+                    FilterChip(
+                        selected = themeMode == mode,
+                        onClick = { onThemeMode(mode) },
+                        label = {
+                            Text(
+                                when (mode) {
+                                    ThemeMode.SYSTEM -> "System"
+                                    ThemeMode.LIGHT -> "Light"
+                                    ThemeMode.DARK -> "Dark"
+                                },
+                            )
+                        },
+                    )
+                }
             }
         }
     }
@@ -1904,45 +2206,58 @@ private fun SwitchRow(
 }
 
 @Composable
-private fun OnboardingScreen(installedApps: List<InstalledApp>, onComplete: (List<InstalledApp>) -> Unit) {
+private fun OnboardingScreen(
+    installedApps: List<InstalledApp>,
+    schedules: List<ScheduleRuleEntity>,
+    onAddSchedule: () -> Unit,
+    onUpdateSchedule: (ScheduleRuleEntity) -> Unit,
+    onComplete: (List<InstalledApp>) -> Unit,
+) {
     val context = LocalContext.current
-    val notificationLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
-    val selectedInstantPackages = remember { mutableStateListOf<String>() }
-    LaunchedEffect(installedApps) {
-        if (selectedInstantPackages.isEmpty()) {
-            installedApps.filter { it.isRecommendedInstantApp }.forEach {
-                selectedInstantPackages.add(it.packageName)
-            }
-        }
+    var permissionRefresh by remember { mutableLongStateOf(0L) }
+    val notificationLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        permissionRefresh++
     }
+    val permissions = rememberPermissionStatus(context, permissionRefresh)
+    val selectedInstantPackages = remember { mutableStateListOf<String>() }
     val nonSystemApps = installedApps
         .filter { !it.isSystemApp }
         .sortedWith(compareByDescending<InstalledApp> { it.isRecommendedInstantApp }.thenByDescending { it.isRecommendedHeavyApp }.thenBy { it.label })
 
-    val pageCount = if (nonSystemApps.isNotEmpty()) 3 else 2
+    val pageCount = 4
     val pagerState = rememberPagerState(pageCount = { pageCount })
     val scope = rememberCoroutineScope()
     val isLastPage = pagerState.currentPage == pageCount - 1
+    val requiredPermissionsReady = permissions.listenerEnabled && permissions.canPost
+    val hasDeliveryTime = schedules.any { it.isEnabled && it.activeDaysMask != 0 }
+    val canContinue = when (pagerState.currentPage) {
+        1 -> requiredPermissionsReady
+        3 -> hasDeliveryTime
+        else -> true
+    }
 
     Column(Modifier.fillMaxSize()) {
         HorizontalPager(
             state = pagerState,
             modifier = Modifier.weight(1f),
+            userScrollEnabled = false,
         ) { page ->
             when (page) {
                 0 -> OnboardingWelcomePage()
                 1 -> OnboardingPermissionsPage(
                     context = context,
+                    permissions = permissions,
                     onRequestPostNotifications = {
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                             notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                         }
                     },
                 )
-                else -> OnboardingAppsPage(
+                2 -> OnboardingAppsPage(
                     nonSystemApps = nonSystemApps,
                     selectedInstantPackages = selectedInstantPackages,
                 )
+                else -> OnboardingSchedulePage(schedules, onAddSchedule, onUpdateSchedule)
             }
         }
 
@@ -1971,6 +2286,19 @@ private fun OnboardingScreen(installedApps: List<InstalledApp>, onComplete: (Lis
                     )
                 }
             }
+            if (!canContinue) {
+                Text(
+                    if (pagerState.currentPage == 1) {
+                        "Allow both required permissions to continue. Precise delivery is optional."
+                    } else {
+                        "Keep at least one delivery time enabled so waiting notifications have a safe release time."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs),
@@ -1991,8 +2319,48 @@ private fun OnboardingScreen(installedApps: List<InstalledApp>, onComplete: (Lis
                         }
                     },
                     modifier = Modifier.weight(1f),
-                ) { Text(if (isLastPage) "Get started" else "Next") }
+                    enabled = canContinue,
+                ) { Text(if (isLastPage) "Finish setup" else "Continue") }
             }
+        }
+    }
+}
+
+@Composable
+private fun OnboardingSchedulePage(
+    schedules: List<ScheduleRuleEntity>,
+    onAddSchedule: () -> Unit,
+    onUpdateSchedule: (ScheduleRuleEntity) -> Unit,
+) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(MdSpacing.md),
+        verticalArrangement = Arrangement.spacedBy(MdSpacing.sm),
+    ) {
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
+                Text("When should waiting notifications arrive?", style = MaterialTheme.typography.headlineMedium)
+                Text(
+                    "Review the suggested delivery times. You can change them now or refine the schedule later.",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        if (schedules.isEmpty()) {
+            item {
+                Button(onClick = onAddSchedule, modifier = Modifier.fillMaxWidth()) {
+                    Text("Add a delivery time")
+                }
+            }
+        }
+        items(schedules, key = { "onboarding_schedule_${it.id}" }) { schedule ->
+            BatchScheduleCard(
+                schedule = schedule,
+                onUpdate = onUpdateSchedule,
+                onDelete = {},
+                allowDelete = false,
+            )
         }
     }
 }
@@ -2008,20 +2376,19 @@ private fun OnboardingWelcomePage() {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(MdSpacing.sm),
         ) {
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier.size(140.dp),
+            Surface(
+                modifier = Modifier.size(104.dp),
+                shape = MaterialTheme.shapes.extraLarge,
+                color = MaterialTheme.colorScheme.primaryContainer,
             ) {
-                FlowerCanvas(
-                    modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.primaryContainer,
-                )
-                Icon(
-                    Icons.Filled.NotificationsActive,
-                    contentDescription = null,
-                    modifier = Modifier.size(52.dp),
-                    tint = MaterialTheme.colorScheme.primary,
-                )
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        Icons.Filled.NotificationsActive,
+                        contentDescription = null,
+                        modifier = Modifier.size(48.dp),
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                }
             }
             Spacer(Modifier.height(MdSpacing.sm))
             Text(
@@ -2030,7 +2397,7 @@ private fun OnboardingWelcomePage() {
                 textAlign = TextAlign.Center,
             )
             Text(
-                "Notif Manager holds distracting notifications and delivers them all at once when you're ready.",
+                "Routine notifications wait for times you choose. Priority apps can still reach you immediately.",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
@@ -2040,7 +2407,11 @@ private fun OnboardingWelcomePage() {
 }
 
 @Composable
-private fun OnboardingPermissionsPage(context: Context, onRequestPostNotifications: () -> Unit) {
+private fun OnboardingPermissionsPage(
+    context: Context,
+    permissions: PermissionStatus,
+    onRequestPostNotifications: () -> Unit,
+) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(MdSpacing.md),
@@ -2048,9 +2419,9 @@ private fun OnboardingPermissionsPage(context: Context, onRequestPostNotificatio
     ) {
         item {
             Column(verticalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
-                Text("A few permissions", style = MaterialTheme.typography.headlineMedium)
+                Text("Required setup", style = MaterialTheme.typography.headlineMedium)
                 Text(
-                    "These let the app capture, hold, and re-deliver your notifications.",
+                    "Notif Manager needs the first two permissions to hold and safely deliver your notifications.",
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -2059,26 +2430,26 @@ private fun OnboardingPermissionsPage(context: Context, onRequestPostNotificatio
         item {
             PermissionCard(
                 title = "Notification access",
-                body = "Required to capture and batch notifications from other apps.",
-                ready = rememberNotificationListenerEnabled(context),
+                body = "Required · Lets Notif Manager hold and organize notifications from other apps.",
+                ready = permissions.listenerEnabled,
                 action = "Open settings",
                 onClick = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) },
             )
         }
         item {
             PermissionCard(
-                title = "Post notifications",
-                body = "Required to notify you when held notifications are delivered.",
-                ready = rememberCanPostNotifications(context),
+                title = "Delivery notifications",
+                body = "Required · Lets Notif Manager tell you when waiting notifications are released.",
+                ready = permissions.canPost,
                 action = "Allow",
                 onClick = onRequestPostNotifications,
             )
         }
         item {
             PermissionCard(
-                title = "Exact timing",
-                body = "Improves accuracy for scheduled delivery times.",
-                ready = rememberExactAlarmReady(context),
+                title = "Precise delivery",
+                body = "Optional · Improves delivery accuracy. Android may deliver a little later without it.",
+                ready = permissions.exactAlarmReady,
                 action = "Open settings",
                 onClick = {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -2105,15 +2476,15 @@ private fun OnboardingAppsPage(nonSystemApps: List<InstalledApp>, selectedInstan
                 verticalArrangement = Arrangement.spacedBy(MdSpacing.xs),
                 modifier = Modifier.padding(bottom = MdSpacing.xs),
             ) {
-                Text("What needs to ring through?", style = MaterialTheme.typography.headlineMedium)
+                Text("What should always reach you?", style = MaterialTheme.typography.headlineMedium)
                 Text(
-                    "Selected apps bypass batching and notify you instantly. Everything else waits for your schedule.",
+                    "Priority apps arrive immediately. Routine apps wait for your delivery schedule unless Open hours are active.",
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 if (instantCount > 0) {
                     Text(
-                        "$instantCount app${if (instantCount == 1) "" else "s"} set to instant",
+                        "$instantCount priority app${if (instantCount == 1) "" else "s"}",
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.primary,
                     )
@@ -2122,6 +2493,14 @@ private fun OnboardingAppsPage(nonSystemApps: List<InstalledApp>, selectedInstan
         }
         val recommended = nonSystemApps.filter { it.isRecommendedInstantApp }
         val rest = nonSystemApps.filter { !it.isRecommendedInstantApp }
+        if (nonSystemApps.isEmpty()) {
+            item {
+                Text(
+                    "No apps are available yet. You can choose priority apps later.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
         if (recommended.isNotEmpty()) {
             item {
                 Text(
@@ -2174,7 +2553,7 @@ private fun OnboardingAppRow(app: InstalledApp, selectedInstantPackages: Mutable
             Column(Modifier.weight(1f)) {
                 Text(app.label, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
-                    if (selected) "Instant · rings through" else "Batched · waits for schedule",
+                    if (selected) "Priority · always immediate" else "Routine · waits for delivery",
                     style = MaterialTheme.typography.labelSmall,
                     color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -2205,13 +2584,22 @@ private fun PermissionCard(
                 Text(title, style = MaterialTheme.typography.titleMedium)
                 Text(body, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(MdSpacing.xs))
-                AssistChip(
-                    onClick = {},
-                    label = { Text(if (ready) "Ready" else "Needs setup") },
-                    leadingIcon = if (ready) {
-                        { Icon(Icons.Filled.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp)) }
-                    } else null,
-                )
+                Surface(
+                    color = if (ready) MaterialTheme.colorScheme.tertiaryContainer else MaterialTheme.colorScheme.errorContainer,
+                    contentColor = if (ready) MaterialTheme.colorScheme.onTertiaryContainer else MaterialTheme.colorScheme.onErrorContainer,
+                    shape = CircleShape,
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(MdSpacing.xxs),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (ready) {
+                            Icon(Icons.Filled.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp))
+                        }
+                        Text(if (ready) "Allowed" else "Not allowed", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
             }
             if (!ready) {
                 Button(onClick = onClick) { Text(action) }
@@ -2404,9 +2792,10 @@ private object AppIconCache {
 private fun AppIcon(packageName: String, label: String, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val bitmap by produceState<ImageBitmap?>(initialValue = AppIconCache.cached(packageName), packageName) {
-        if (value == null) {
-            value = AppIconCache.load(context.applicationContext, packageName)
-        }
+        // Re-resolve for the current packageName on every key change. produceState keeps the
+        // previous value across key changes, so guarding on `value == null` would leave a
+        // recycled row showing the prior app's icon next to the new app's name.
+        value = AppIconCache.cached(packageName) ?: AppIconCache.load(context.applicationContext, packageName)
     }
     Surface(modifier = modifier.clip(MaterialTheme.shapes.medium), color = MaterialTheme.colorScheme.primaryContainer) {
         Box(contentAlignment = Alignment.Center) {
@@ -2450,20 +2839,42 @@ private fun EmptyState(title: String, body: String) {
     }
 }
 
-@Composable
-private fun rememberCanPostNotifications(context: Context): Boolean {
-    return Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
-        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
-}
+private data class PermissionStatus(
+    val canPost: Boolean,
+    val exactAlarmReady: Boolean,
+    val listenerEnabled: Boolean,
+)
 
 @Composable
-private fun rememberExactAlarmReady(context: Context): Boolean {
-    return Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
-        context.getSystemService(AlarmManager::class.java).canScheduleExactAlarms()
+private fun rememberPermissionStatus(context: Context, refreshToken: Long = 0L): PermissionStatus {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var status by remember(context) { mutableStateOf(readPermissionStatus(context)) }
+    fun refresh() {
+        status = readPermissionStatus(context)
+    }
+    DisposableEffect(lifecycleOwner, context) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) refresh()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        refresh()
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    LaunchedEffect(refreshToken) { refresh() }
+    return status
 }
 
-@Composable
-private fun rememberNotificationListenerEnabled(context: Context): Boolean {
+private fun readPermissionStatus(context: Context): PermissionStatus {
+    return PermissionStatus(
+        canPost = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED,
+        exactAlarmReady = Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+            context.getSystemService(AlarmManager::class.java).canScheduleExactAlarms(),
+        listenerEnabled = notificationListenerEnabled(context),
+    )
+}
+
+private fun notificationListenerEnabled(context: Context): Boolean {
     val enabled = Settings.Secure.getString(context.contentResolver, "enabled_notification_listeners")
     return enabled?.contains(context.packageName, ignoreCase = true) == true
 }
@@ -2537,8 +2948,8 @@ private fun NotificationEntity.groupKey(): String {
 
 private fun DeliveryMode.label(): String {
     return when (this) {
-        DeliveryMode.BATCH -> "Batched"
-        DeliveryMode.INSTANT -> "Instant"
+        DeliveryMode.BATCH -> "Routine"
+        DeliveryMode.INSTANT -> "Priority"
     }
 }
 
