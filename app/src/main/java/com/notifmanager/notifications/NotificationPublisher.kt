@@ -46,9 +46,9 @@ class NotificationPublisher(private val context: Context) {
 
         val notification = NotificationCompat.Builder(context, DIGEST_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
-            .setContentTitle("Your inbox is ready")
-            .setContentText("${notifications.size} notifications held from $topApps")
-            .setStyle(NotificationCompat.BigTextStyle().bigText("${notifications.size} notifications are ready. Top apps: $topApps."))
+            .setContentTitle("Waiting notifications delivered")
+            .setContentText("${notifications.size} notifications from $topApps")
+            .setStyle(NotificationCompat.BigTextStyle().bigText("${notifications.size} notifications were released. Top apps: $topApps."))
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
