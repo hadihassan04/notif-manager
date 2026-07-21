@@ -8,8 +8,6 @@ import com.notifmanager.data.ScheduleRuleEntity
 import java.time.LocalDateTime
 import java.time.ZoneId
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RuleEngineTest {
@@ -23,7 +21,7 @@ class RuleEngineTest {
     )
 
     @Test
-    fun defaultRuleBatchesDuringHoldWindow() {
+    fun defaultRuleWaitsForTheNextDelivery() {
         val decision = engine.decide(
             incoming = incomingAt(hour = 15),
             schedules = listOf(schedule),
@@ -37,7 +35,7 @@ class RuleEngineTest {
     }
 
     @Test
-    fun instantDefaultAllowsSystemSourcesThroughDuringHoldWindow() {
+    fun priorityDefaultAllowsSystemSourcesThroughWhileRoutineAppsWait() {
         val decision = engine.decide(
             incoming = incomingAt(hour = 15),
             schedules = listOf(schedule),
@@ -130,7 +128,7 @@ class RuleEngineTest {
     }
 
     @Test
-    fun inactiveWindowAllowsInstantDelivery() {
+    fun routineNotificationsStillWaitAfterAFormerHoldBoundary() {
         val decision = engine.decide(
             incoming = incomingAt(hour = 20),
             schedules = listOf(schedule),
@@ -138,22 +136,27 @@ class RuleEngineTest {
             channelRules = emptyList(),
         )
 
-        assertEquals(DeliveryMode.INSTANT, decision.deliveryMode)
-        assertEquals(RuleSource.SCHEDULE_INACTIVE, decision.ruleSource)
+        assertEquals(DeliveryMode.BATCH, decision.deliveryMode)
+        assertEquals(RuleSource.DEFAULT, decision.ruleSource)
+        assertEquals("2026-06-22-batch-2-1140", decision.batchId)
     }
 
     @Test
-    fun overnightHoldWindowSpansMidnight() {
-        val overnight = schedule.copy(holdStartMinutes = 22 * 60, releaseMinutes = 7 * 60)
+    fun earliestEnabledDeliveryReceivesTheNotification() {
+        val morning = schedule.copy(id = 3, releaseMinutes = 7 * 60)
+        val evening = schedule.copy(id = 4, releaseMinutes = 22 * 60)
+        val decision = engine.decide(
+            incoming = incomingAt(hour = 20),
+            schedules = listOf(morning, evening),
+            appRules = emptyList(),
+            channelRules = emptyList(),
+        )
 
-        assertTrue(engine.isWithinHoldWindow(incomingAt(hour = 23).postedAtMillis, overnight))
-        assertTrue(engine.isWithinHoldWindow(incomingAt(day = 22, hour = 6).postedAtMillis, overnight))
-        assertFalse(engine.isWithinHoldWindow(incomingAt(hour = 12).postedAtMillis, overnight))
-        assertEquals("2026-06-22-batch-2-420", engine.batchIdFor(incomingAt(hour = 23).postedAtMillis, overnight))
+        assertEquals("2026-06-21-batch-4-1320", decision.batchId)
     }
 
     @Test
-    fun inactiveWeekdayAllowsInstantDelivery() {
+    fun inactiveWeekdayWaitsForTheNextActiveDeliveryDay() {
         val mondayOnly = schedule.copy(activeDaysMask = 1)
         val sunday = incomingAt(day = 21, hour = 15)
 
@@ -164,8 +167,9 @@ class RuleEngineTest {
             channelRules = emptyList(),
         )
 
-        assertEquals(DeliveryMode.INSTANT, decision.deliveryMode)
-        assertEquals(RuleSource.SCHEDULE_INACTIVE, decision.ruleSource)
+        assertEquals(DeliveryMode.BATCH, decision.deliveryMode)
+        assertEquals(RuleSource.DEFAULT, decision.ruleSource)
+        assertEquals("2026-06-22-batch-2-1140", decision.batchId)
     }
 
     private fun incomingAt(day: Int = 21, hour: Int, channelId: String? = null): IncomingNotification {

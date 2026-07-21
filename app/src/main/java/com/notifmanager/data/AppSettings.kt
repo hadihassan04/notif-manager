@@ -4,15 +4,26 @@ import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
 private val Context.settingsDataStore by preferencesDataStore("settings")
 
+enum class ThemeMode {
+    SYSTEM,
+    LIGHT,
+    DARK,
+}
+
 class AppSettings(private val context: Context) {
     val dynamicColorEnabled: Flow<Boolean> = context.settingsDataStore.data.map { prefs ->
         prefs[DYNAMIC_COLOR_ENABLED] ?: true
+    }
+
+    val themeMode: Flow<ThemeMode> = context.settingsDataStore.data.map { prefs ->
+        ThemeMode.entries.getOrElse(prefs[THEME_MODE] ?: ThemeMode.SYSTEM.ordinal) { ThemeMode.SYSTEM }
     }
 
     val showSystemApps: Flow<Boolean> = context.settingsDataStore.data.map { prefs ->
@@ -31,6 +42,10 @@ class AppSettings(private val context: Context) {
         prefs[PAUSE_BATCHING] ?: false
     }
 
+    val temporaryOpenUntilMillis: Flow<Long> = context.settingsDataStore.data.map { prefs ->
+        prefs[TEMPORARY_OPEN_UNTIL_MILLIS] ?: 0L
+    }
+
     val setupDismissedOnce: Flow<Boolean> = context.settingsDataStore.data.map { prefs ->
         prefs[SETUP_DISMISSED_ONCE] ?: false
     }
@@ -42,6 +57,12 @@ class AppSettings(private val context: Context) {
     suspend fun setDynamicColorEnabled(enabled: Boolean) {
         context.settingsDataStore.edit { prefs ->
             prefs[DYNAMIC_COLOR_ENABLED] = enabled
+        }
+    }
+
+    suspend fun setThemeMode(mode: ThemeMode) {
+        context.settingsDataStore.edit { prefs ->
+            prefs[THEME_MODE] = mode.ordinal
         }
     }
 
@@ -69,6 +90,13 @@ class AppSettings(private val context: Context) {
         }
     }
 
+    suspend fun setTemporaryOpenUntilMillis(untilMillis: Long) {
+        context.settingsDataStore.edit { prefs ->
+            prefs[TEMPORARY_OPEN_UNTIL_MILLIS] = untilMillis.coerceAtLeast(0L)
+            prefs[PAUSE_BATCHING] = false
+        }
+    }
+
     suspend fun setSetupDismissedOnce(dismissed: Boolean) {
         context.settingsDataStore.edit { prefs ->
             prefs[SETUP_DISMISSED_ONCE] = dismissed
@@ -86,10 +114,12 @@ class AppSettings(private val context: Context) {
         const val RETENTION_NEVER = 0
 
         val DYNAMIC_COLOR_ENABLED = booleanPreferencesKey("dynamic_color_enabled")
+        val THEME_MODE = intPreferencesKey("theme_mode")
         val SHOW_SYSTEM_APPS = booleanPreferencesKey("show_system_apps")
         val HISTORY_RETENTION_DAYS = intPreferencesKey("history_retention_days")
         val ONBOARDING_COMPLETED = booleanPreferencesKey("onboarding_completed")
         val PAUSE_BATCHING = booleanPreferencesKey("pause_batching")
+        val TEMPORARY_OPEN_UNTIL_MILLIS = longPreferencesKey("temporary_open_until_millis")
         val SETUP_DISMISSED_ONCE = booleanPreferencesKey("setup_dismissed_once")
         val NON_BATCHABLE_DEFAULTS_NORMALIZED = booleanPreferencesKey("non_batchable_defaults_normalized")
     }

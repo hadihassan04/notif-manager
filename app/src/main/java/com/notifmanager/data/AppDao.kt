@@ -58,6 +58,9 @@ interface AppDao {
     @Query("SELECT * FROM notifications WHERE notificationKey = :key LIMIT 1")
     suspend fun notificationByKey(key: String): NotificationEntity?
 
+    @Query("SELECT * FROM notifications WHERE deliveryMode = 'BATCH' AND isArchived = 0 ORDER BY postedAtMillis DESC")
+    suspend fun activeBatchedNotifications(): List<NotificationEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertNotification(notification: NotificationEntity)
 
@@ -72,6 +75,9 @@ interface AppDao {
 
     @Query("UPDATE notifications SET isArchived = 0 WHERE notificationKey IN (:keys)")
     suspend fun unarchiveNotifications(keys: List<String>)
+
+    @Query("UPDATE notifications SET batchId = :batchId WHERE notificationKey IN (:keys)")
+    suspend fun moveNotificationsToBatch(keys: List<String>, batchId: String)
 
     @Query("UPDATE notifications SET isArchived = 1 WHERE batchId = :batchId")
     suspend fun archiveBatch(batchId: String)
@@ -147,6 +153,9 @@ interface AppDao {
 
     @Query("SELECT * FROM instant_windows ORDER BY startMinutes, endMinutes")
     suspend fun instantWindows(): List<InstantWindowEntity>
+
+    @Query("SELECT * FROM instant_windows WHERE id = :id LIMIT 1")
+    suspend fun instantWindowById(id: Long): InstantWindowEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertInstantWindow(window: InstantWindowEntity): Long

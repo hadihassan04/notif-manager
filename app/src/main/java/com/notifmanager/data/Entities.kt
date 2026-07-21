@@ -99,5 +99,6 @@ data class InstantWindowEntity(
     val isEnabled: Boolean = true,
     val startMinutes: Int = 17 * 60,
     val endMinutes: Int = 0,
+    val activeDaysMask: Int = ScheduleRuleEntity.ALL_DAYS_MASK,
     val updatedAtMillis: Long,
 )

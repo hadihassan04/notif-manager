@@ -8,17 +8,20 @@ import android.os.Build
 import com.notifmanager.core.IncomingNotification
 import com.notifmanager.core.Insights
 import com.notifmanager.core.InsightsCalculator
+import com.notifmanager.core.OpenHoursCalculator
 import com.notifmanager.core.RuleEngine
 import com.notifmanager.core.ScheduleCalculator
 import com.notifmanager.notifications.BatchScheduler
 import com.notifmanager.notifications.NotificationCaptureFilter
+import com.notifmanager.notifications.NotificationPublisher
 import com.notifmanager.notifications.NotificationStatusController
+import com.notifmanager.notifications.OpenHoursScheduler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOn
-import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneId
 
 data class InstalledApp(
@@ -74,6 +77,7 @@ class Repository(
     private val ruleEngine = RuleEngine()
     private val insightsCalculator = InsightsCalculator()
     private val scheduleCalculator = ScheduleCalculator()
+    private val openHoursCalculator = OpenHoursCalculator()
     @Volatile private var cachedAppCatalog: List<AppCatalogEntry>? = null
 
     val inbox: Flow<List<InboxBatch>> = dao.observeInbox()
@@ -126,8 +130,9 @@ class Repository(
 
     suspend fun capture(incoming: IncomingNotification): NotificationEntity {
         normalizeNonBatchableDefaults()
-        val schedules = ensureSchedules()
-        val instantOverride = settings.pauseBatching.first() || isInsideInstantWindow(incoming.postedAtMillis, dao.instantWindows())
+        val schedules = dao.schedules()
+        val instantOverride = settings.temporaryOpenUntilMillis.first() > incoming.postedAtMillis ||
+            openHoursCalculator.isOpenAt(incoming.postedAtMillis, dao.instantWindows())
         val decision = if (instantOverride) {
             null
         } else {
@@ -202,8 +207,21 @@ class Repository(
         }
     }
 
+    suspend fun applyPrioritySelection(apps: List<InstalledApp>, priorityPackages: Set<String>) {
+        val now = System.currentTimeMillis()
+        apps.filter { !it.isSystemApp }.forEach { app ->
+            dao.upsertAppRule(
+                AppRuleEntity(
+                    packageName = app.packageName,
+                    appLabel = app.label,
+                    deliveryMode = if (app.packageName in priorityPackages) DeliveryMode.INSTANT else DeliveryMode.BATCH,
+                    updatedAtMillis = now,
+                ),
+            )
+        }
+    }
+
     suspend fun addSchedule() {
-        ensureSchedules()
         dao.upsertSchedule(
             ScheduleRuleEntity(
                 name = "",
@@ -222,26 +240,45 @@ class Repository(
 
     suspend fun deleteSchedule(id: Long) {
         dao.deleteSchedule(id)
-        ensureSchedules()
         reschedule()
     }
 
     suspend fun addInstantWindow() {
-        dao.upsertInstantWindow(
-            InstantWindowEntity(
-                startMinutes = 17 * 60,
-                endMinutes = 0,
-                updatedAtMillis = System.currentTimeMillis(),
-            ),
+        val now = System.currentTimeMillis()
+        val window = InstantWindowEntity(
+            startMinutes = 17 * 60,
+            endMinutes = 0,
+            updatedAtMillis = now,
         )
+        dao.upsertInstantWindow(window)
+        if (openHoursCalculator.isOpenAt(now, listOf(window))) releaseWaitingNow(now)
+        reschedule()
     }
 
     suspend fun updateInstantWindow(window: InstantWindowEntity) {
-        dao.upsertInstantWindow(window.copy(updatedAtMillis = System.currentTimeMillis()))
+        val now = System.currentTimeMillis()
+        val wasOpen = dao.instantWindowById(window.id)?.let {
+            openHoursCalculator.isOpenAt(now, listOf(it))
+        } == true
+        val updated = window.copy(updatedAtMillis = now)
+        dao.upsertInstantWindow(updated)
+        if (!wasOpen && openHoursCalculator.isOpenAt(now, listOf(updated))) releaseWaitingNow(now)
+        reschedule()
     }
 
     suspend fun deleteInstantWindow(id: Long) {
         dao.deleteInstantWindow(id)
+        reschedule()
+    }
+
+    suspend fun startTemporaryOpen(untilMillis: Long) {
+        if (untilMillis <= System.currentTimeMillis()) return
+        settings.setTemporaryOpenUntilMillis(untilMillis)
+        releaseWaitingNow()
+    }
+
+    suspend fun endTemporaryOpen() {
+        settings.setTemporaryOpenUntilMillis(0L)
     }
 
     suspend fun archiveNotification(key: String) {
@@ -296,19 +333,62 @@ class Repository(
         dao.deleteHistoryOlderThan(cutoffMillis)
     }
 
+    suspend fun initialize() {
+        ensureSchedules()
+        if (settings.pauseBatching.first()) {
+            settings.setTemporaryOpenUntilMillis(System.currentTimeMillis() + 60L * 60L * 1000L)
+        }
+        normalizeNonBatchableDefaults()
+        reschedule()
+    }
+
     suspend fun reschedule() {
+        val now = System.currentTimeMillis()
         val releases = scheduleCalculator.nextReleases(
-            nowMillis = System.currentTimeMillis(),
-            schedules = ensureSchedules(),
+            nowMillis = now,
+            schedules = dao.schedules(),
         )
-        val scheduler = BatchScheduler(context)
+        val batchScheduler = BatchScheduler(context)
         releases.forEach { release ->
-            scheduler.schedule(
+            batchScheduler.schedule(
                 scheduleId = release.schedule.id,
                 batchId = release.batchId,
                 triggerAtMillis = release.triggerAtMillis,
             )
         }
+        val openScheduler = OpenHoursScheduler(context)
+        openHoursCalculator.nextOpenStarts(now, dao.instantWindows()).forEach { start ->
+            openScheduler.schedule(start.window.id, start.triggerAtMillis)
+        }
+    }
+
+    suspend fun handleOpenHoursStart(windowId: Long, triggerAtMillis: Long) {
+        val now = System.currentTimeMillis()
+        val window = dao.instantWindowById(windowId)
+        val wasOpenBeforeBoundary = openHoursCalculator.isOpenAt(
+            triggerAtMillis - 1L,
+            dao.instantWindows(),
+        )
+        if (
+            window != null &&
+            !wasOpenBeforeBoundary &&
+            openHoursCalculator.isOpenAt(now, listOf(window))
+        ) {
+            releaseWaitingNow(now)
+        }
+        reschedule()
+    }
+
+    suspend fun releaseWaitingNow(nowMillis: Long = System.currentTimeMillis()): Int {
+        val waiting = dao.activeBatchedNotifications().filter { notification ->
+            val releaseAt = notification.batchId?.let(::batchReleaseAtMillis) ?: 0L
+            releaseAt == 0L || releaseAt > nowMillis
+        }
+        if (waiting.isEmpty()) return 0
+        val releaseBatchId = openReleaseBatchId(nowMillis)
+        dao.moveNotificationsToBatch(waiting.map { it.notificationKey }, releaseBatchId)
+        NotificationPublisher(context).showDigest(releaseBatchId, waiting)
+        return waiting.size
     }
 
     suspend fun batchIdForSchedule(id: Long): String? {
@@ -427,23 +507,20 @@ class Repository(
 
     private fun buildInboxBatches(
         notifications: List<NotificationEntity>,
-        schedules: List<ScheduleRuleEntity>,
+        @Suppress("UNUSED_PARAMETER") schedules: List<ScheduleRuleEntity>,
     ): List<InboxBatch> {
-        val schedulesById = schedules.associateBy { it.id }
         return notifications
             .filter { it.deliveryMode == DeliveryMode.BATCH }
             .groupBy { it.batchId ?: UNBATCHED_BATCH_ID }
-            .map { (batchId, items) -> buildBatch(batchId, items, schedulesById) }
+            .map { (batchId, items) -> buildBatch(batchId, items) }
             .sortedByDescending { it.newestAtMillis }
     }
 
     private fun buildBatch(
         batchId: String,
         items: List<NotificationEntity>,
-        schedulesById: Map<Long, ScheduleRuleEntity>,
     ): InboxBatch {
         val sortedItems = items.sortedByDescending { it.postedAtMillis }
-        val date = batchId.substringBefore("-batch-")
         val releaseMinutes = batchId.substringAfterLast("-", missingDelimiterValue = "").toIntOrNull()
         val topApps = sortedItems
             .groupingBy { it.appLabel }
@@ -453,21 +530,13 @@ class Repository(
             .take(3)
             .map { it.key }
         val summaryApps = topApps.joinToString()
-        val releaseAtMillis = if (releaseMinutes != null) {
-            try {
-                val parts = date.split("-")
-                val cal = java.util.Calendar.getInstance()
-                cal.set(parts[0].toInt(), parts[1].toInt() - 1, parts[2].toInt(), releaseMinutes / 60, releaseMinutes % 60, 0)
-                cal.set(java.util.Calendar.MILLISECOND, 0)
-                cal.timeInMillis
-            } catch (e: Exception) { 0L }
-        } else 0L
+        val releaseAtMillis = batchReleaseAtMillis(batchId)
         return InboxBatch(
             batchId = batchId,
             title = when {
                 batchId == UNBATCHED_BATCH_ID -> "Unbatched"
-                releaseMinutes != null -> "${formatMinutes(releaseMinutes)} batch"
-                else -> "Batch"
+                releaseMinutes != null -> "${formatMinutes(releaseMinutes)} delivery"
+                else -> "Delivery"
             },
             notifications = sortedItems,
             topApps = topApps,
@@ -493,12 +562,6 @@ class Repository(
             ScheduleRuleEntity(name = "", holdStartMinutes = 17 * 60, releaseMinutes = 22 * 60, updatedAtMillis = System.currentTimeMillis()),
         ).forEach { dao.upsertSchedule(it) }
         return dao.schedules()
-    }
-
-    private fun scheduleIdFromBatchId(batchId: String): Long? {
-        return batchId.substringAfter("-batch-", missingDelimiterValue = "")
-            .substringBefore("-")
-            .toLongOrNull()
     }
 
     private fun ApplicationInfo.isSystemApp(): Boolean {
@@ -530,20 +593,22 @@ class Repository(
         return "$hour12:${"%02d".format(minute)} $suffix"
     }
 
-    private fun isInsideInstantWindow(epochMillis: Long, windows: List<InstantWindowEntity>): Boolean {
-        val minute = Instant.ofEpochMilli(epochMillis)
+    private fun batchReleaseAtMillis(batchId: String): Long {
+        if (batchId == UNBATCHED_BATCH_ID) return 0L
+        val date = runCatching { LocalDate.parse(batchId.substringBefore("-batch-")) }.getOrNull() ?: return 0L
+        val releaseMinutes = batchId.substringAfterLast("-", missingDelimiterValue = "").toIntOrNull() ?: return 0L
+        if (releaseMinutes !in 0 until 24 * 60) return 0L
+        return date
+            .atTime(releaseMinutes / 60, releaseMinutes % 60)
             .atZone(ZoneId.systemDefault())
-            .toLocalTime()
-            .toSecondOfDay() / 60
-        return windows.any { window ->
-            if (!window.isEnabled || window.startMinutes == window.endMinutes) {
-                false
-            } else if (window.startMinutes < window.endMinutes) {
-                minute in window.startMinutes until window.endMinutes
-            } else {
-                minute >= window.startMinutes || minute < window.endMinutes
-            }
-        }
+            .toInstant()
+            .toEpochMilli()
+    }
+
+    private fun openReleaseBatchId(nowMillis: Long): String {
+        val now = java.time.Instant.ofEpochMilli(nowMillis).atZone(ZoneId.systemDefault())
+        val minutes = now.hour * 60 + now.minute
+        return "${now.toLocalDate()}-batch-0-$minutes"
     }
 
     companion object {

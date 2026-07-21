@@ -46,6 +46,10 @@
             android:exported="false" />
 
         <receiver
+            android:name=".notifications.OpenHoursReceiver"
+            android:exported="false" />
+
+        <receiver
             android:name=".notifications.RescheduleReceiver"
             android:exported="false">
             <intent-filter>
