@@ -452,13 +452,19 @@ private fun NotifManagerApp(
     if (!onboardingCompleted) {
         val installedApps by viewModel.installedApps.collectAsStateWithLifecycle()
         val schedules by viewModel.schedules.collectAsStateWithLifecycle()
-        OnboardingScreen(
-            installedApps = installedApps,
-            schedules = schedules,
-            onAddSchedule = viewModel::addSchedule,
-            onUpdateSchedule = viewModel::updateSchedule,
-            onComplete = viewModel::completeOnboarding,
-        )
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background,
+            contentColor = MaterialTheme.colorScheme.onBackground,
+        ) {
+            OnboardingScreen(
+                installedApps = installedApps,
+                schedules = schedules,
+                onAddSchedule = viewModel::addSchedule,
+                onUpdateSchedule = viewModel::updateSchedule,
+                onComplete = viewModel::completeOnboarding,
+            )
+        }
         return
     }
 
