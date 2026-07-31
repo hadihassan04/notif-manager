@@ -788,6 +788,11 @@ private data class NotificationGroup(
     val primary: NotificationEntity = items.maxBy { it.postedAtMillis }
     val count: Int = items.size
     val notificationKeys: List<String> = items.map { it.notificationKey }
+    // A row's persistent UI state must follow the exact notifications it represents.
+    // `key` describes a logical group (app/title/channel), so it remains the same when
+    // a new notification joins that group. This identity is used for Compose item keys
+    // to avoid transferring a dismissed swipe state to the updated row.
+    val rowKey: String = notificationKeys.sorted().joinToString(separator = "\n")
     val title: String? = primary.title
     val text: String? = items
         .sortedByDescending { it.postedAtMillis }
@@ -960,7 +965,7 @@ private fun NotificationsScreen(
             }
         }
 
-        items(historyGroups, key = { it.key }) { group ->
+        items(historyGroups, key = { "history_${it.rowKey}" }) { group ->
             NotificationRow(
                 modifier = Modifier.animateItem(
                     fadeInSpec = spring(stiffness = Spring.StiffnessMediumLow),
@@ -994,7 +999,7 @@ private fun NotificationsScreen(
         }
 
         if (showArchived) {
-            items(archivedGroups, key = { "arc_${it.key}" }) { group ->
+            items(archivedGroups, key = { "archived_${it.rowKey}" }) { group ->
                 NotificationRow(
                     modifier = Modifier.animateItem(
                         fadeInSpec = spring(stiffness = Spring.StiffnessMediumLow),
@@ -1205,7 +1210,7 @@ private fun BatchSummaryCard(
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
                     previewGroups.forEach { group ->
-                        key(group.key) {
+                        key(group.rowKey) {
                             NotificationRow(
                                 group = group,
                                 archiveLabel = "Archive",
@@ -1225,6 +1230,25 @@ private fun BatchSummaryCard(
 @Composable
 private fun NotificationRow(
     modifier: Modifier = Modifier,
+    group: NotificationGroup,
+    archiveLabel: String,
+    onArchive: () -> Unit,
+) {
+    // Reset local swipe state if this composition slot is rebound to different
+    // notifications. This is especially important for the non-lazy batch previews.
+    key(group.rowKey, archiveLabel) {
+        NotificationRowContent(
+            modifier = modifier,
+            group = group,
+            archiveLabel = archiveLabel,
+            onArchive = onArchive,
+        )
+    }
+}
+
+@Composable
+private fun NotificationRowContent(
+    modifier: Modifier,
     group: NotificationGroup,
     archiveLabel: String,
     onArchive: () -> Unit,
@@ -2797,19 +2821,21 @@ private object AppIconCache {
 @Composable
 private fun AppIcon(packageName: String, label: String, modifier: Modifier = Modifier) {
     val context = LocalContext.current
-    val bitmap by produceState<ImageBitmap?>(initialValue = AppIconCache.cached(packageName), packageName) {
-        // Re-resolve for the current packageName on every key change. produceState keeps the
-        // previous value across key changes, so guarding on `value == null` would leave a
-        // recycled row showing the prior app's icon next to the new app's name.
-        value = AppIconCache.cached(packageName) ?: AppIconCache.load(context.applicationContext, packageName)
-    }
-    Surface(modifier = modifier.clip(MaterialTheme.shapes.medium), color = MaterialTheme.colorScheme.primaryContainer) {
-        Box(contentAlignment = Alignment.Center) {
-            val icon = bitmap
-            if (icon != null) {
-                Image(bitmap = icon, contentDescription = "$label icon", modifier = Modifier.fillMaxSize())
-            } else {
-                Text(label.take(1), style = MaterialTheme.typography.titleMedium)
+    // `produceState` restarts its producer for a key change but retains the underlying
+    // state object. A keyed composition boundary recreates it with an empty/new-package
+    // value, preventing a recycled row from briefly or permanently showing the prior icon.
+    key(packageName) {
+        val bitmap by produceState<ImageBitmap?>(initialValue = AppIconCache.cached(packageName)) {
+            value = AppIconCache.cached(packageName) ?: AppIconCache.load(context.applicationContext, packageName)
+        }
+        Surface(modifier = modifier.clip(MaterialTheme.shapes.medium), color = MaterialTheme.colorScheme.primaryContainer) {
+            Box(contentAlignment = Alignment.Center) {
+                val icon = bitmap
+                if (icon != null) {
+                    Image(bitmap = icon, contentDescription = "$label icon", modifier = Modifier.fillMaxSize())
+                } else {
+                    Text(label.take(1), style = MaterialTheme.typography.titleMedium)
+                }
             }
         }
     }
