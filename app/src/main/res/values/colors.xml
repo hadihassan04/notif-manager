@@ -1,0 +1,5 @@
+<resources>
+    <!-- Deep end of the launcher icon gradient, so the splash reads as the icon
+         expanding into the window. -->
+    <color name="tide_splash_background">#12395C</color>
+</resources>

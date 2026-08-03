@@ -5,4 +5,10 @@
         <item name="android:windowLightStatusBar">true</item>
         <item name="android:fontFamily">sans</item>
     </style>
+
+    <style name="Theme.Tide.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/tide_splash_background</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_splash_wave</item>
+        <item name="postSplashScreenTheme">@style/Theme.Tide</item>
+    </style>
 </resources>
