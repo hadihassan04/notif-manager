@@ -99,7 +99,7 @@ private val NotifShapes = Shapes(
 )
 
 @Composable
-fun NotifManagerTheme(
+fun TideTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     dynamicColor: Boolean = true,
     content: @Composable () -> Unit,

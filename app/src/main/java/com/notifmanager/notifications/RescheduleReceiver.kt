@@ -3,7 +3,7 @@ package com.notifmanager.notifications
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import com.notifmanager.NotifManagerApp
+import com.notifmanager.TideApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -14,7 +14,7 @@ class RescheduleReceiver : BroadcastReceiver() {
         val pendingResult = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                (context.applicationContext as NotifManagerApp).repository.reschedule()
+                (context.applicationContext as TideApp).repository.reschedule()
             } finally {
                 pendingResult.finish()
             }

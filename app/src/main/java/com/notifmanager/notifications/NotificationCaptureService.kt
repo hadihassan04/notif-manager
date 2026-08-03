@@ -3,7 +3,7 @@ package com.notifmanager.notifications
 import android.app.Notification
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
-import com.notifmanager.NotifManagerApp
+import com.notifmanager.TideApp
 import com.notifmanager.core.IncomingNotification
 import com.notifmanager.data.DeliveryMode
 import kotlinx.coroutines.CoroutineScope
@@ -49,7 +49,7 @@ class NotificationCaptureService : NotificationListenerService() {
         )
 
         scope.launch {
-            val entity = (application as NotifManagerApp).repository.capture(incoming)
+            val entity = (application as TideApp).repository.capture(incoming)
             if (entity.deliveryMode == DeliveryMode.BATCH) {
                 cancelNotification(sbn.key)
             }

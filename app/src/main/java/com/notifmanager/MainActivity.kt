@@ -169,7 +169,7 @@ import com.notifmanager.data.ScheduleRuleEntity
 import com.notifmanager.data.ThemeMode
 import com.notifmanager.notifications.PendingIntentRegistry
 import com.notifmanager.ui.theme.MdSpacing
-import com.notifmanager.ui.theme.NotifManagerTheme
+import com.notifmanager.ui.theme.TideTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -193,7 +193,7 @@ class MainActivity : ComponentActivity() {
         pendingBatchId = intent?.getStringExtra(EXTRA_BATCH_ID)
         enableEdgeToEdge()
         setContent {
-            val app = application as NotifManagerApp
+            val app = application as TideApp
             val dynamicColor by app.settings.dynamicColorEnabled.collectAsStateWithLifecycle(initialValue = true)
             val themeMode by app.settings.themeMode.collectAsStateWithLifecycle(initialValue = ThemeMode.SYSTEM)
             val systemDark = isSystemInDarkTheme()
@@ -202,7 +202,7 @@ class MainActivity : ComponentActivity() {
                 ThemeMode.LIGHT -> false
                 ThemeMode.DARK -> true
             }
-            NotifManagerTheme(darkTheme = darkTheme, dynamicColor = dynamicColor) {
+            TideTheme(darkTheme = darkTheme, dynamicColor = dynamicColor) {
                 val background = MaterialTheme.colorScheme.background.toArgb()
                 SideEffect {
                     window.decorView.setBackgroundColor(background)
@@ -213,7 +213,7 @@ class MainActivity : ComponentActivity() {
                 val viewModel: MainViewModel = viewModel(
                     factory = MainViewModel.factory(app.repository, app.settings),
                 )
-                NotifManagerApp(
+                TideRoot(
                     viewModel = viewModel,
                     pendingBatchId = pendingBatchId,
                     onBatchIntentConsumed = { pendingBatchId = null },
@@ -443,7 +443,7 @@ private enum class Destination(val route: String, val label: String, val icon: I
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun NotifManagerApp(
+private fun TideRoot(
     viewModel: MainViewModel,
     pendingBatchId: String?,
     onBatchIntentConsumed: () -> Unit,
@@ -2078,7 +2078,7 @@ private fun SettingsScreen(
         item {
             PermissionCard(
                 title = "Delivery notifications",
-                body = "Required so Notif Manager can tell you when waiting notifications are released.",
+                body = "Required so Tide can tell you when waiting notifications are released.",
                 ready = permissions.canPost,
                 action = "Allow",
                 onClick = {
@@ -2111,7 +2111,7 @@ private fun SettingsScreen(
                 body = if (monetAvailable) {
                     "Match the app theme to your Android wallpaper colors."
                 } else {
-                    "Available on Android 12 and newer. This device uses the Notif Manager palette."
+                    "Available on Android 12 and newer. This device uses the Tide palette."
                 },
                 checked = dynamicColor && monetAvailable,
                 enabled = monetAvailable,
@@ -2451,7 +2451,7 @@ private fun OnboardingPermissionsPage(
             Column(verticalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
                 Text("Required setup", style = MaterialTheme.typography.headlineMedium)
                 Text(
-                    "Notif Manager needs the first two permissions to hold and safely deliver your notifications.",
+                    "Tide needs the first two permissions to hold and safely deliver your notifications.",
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -2460,7 +2460,7 @@ private fun OnboardingPermissionsPage(
         item {
             PermissionCard(
                 title = "Notification access",
-                body = "Required · Lets Notif Manager hold and organize notifications from other apps.",
+                body = "Required · Lets Tide hold and organize notifications from other apps.",
                 ready = permissions.listenerEnabled,
                 action = "Open settings",
                 onClick = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) },
@@ -2469,7 +2469,7 @@ private fun OnboardingPermissionsPage(
         item {
             PermissionCard(
                 title = "Delivery notifications",
-                body = "Required · Lets Notif Manager tell you when waiting notifications are released.",
+                body = "Required · Lets Tide tell you when waiting notifications are released.",
                 ready = permissions.canPost,
                 action = "Allow",
                 onClick = onRequestPostNotifications,

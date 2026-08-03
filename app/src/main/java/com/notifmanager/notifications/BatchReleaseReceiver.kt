@@ -3,7 +3,7 @@ package com.notifmanager.notifications
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import com.notifmanager.NotifManagerApp
+import com.notifmanager.TideApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -13,7 +13,7 @@ class BatchReleaseReceiver : BroadcastReceiver() {
         val pendingResult = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                val app = context.applicationContext as NotifManagerApp
+                val app = context.applicationContext as TideApp
                 val batchId = intent?.getStringExtra(EXTRA_BATCH_ID)
                     ?: intent?.getLongExtra(EXTRA_SCHEDULE_ID, -1L)
                         ?.takeIf { it > 0 }

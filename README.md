@@ -1,6 +1,6 @@
-# NotifManager
+# Tide
 
-NotifManager is an Android app for capturing, organizing, batching, and reviewing notifications. It uses rules, schedules, and insight views to help reduce notification noise while keeping important items accessible.
+Tide is an Android app for capturing, organizing, batching, and reviewing notifications. It uses rules, schedules, and insight views to help reduce notification noise while keeping important items accessible.
 
 ## Tech Stack
 

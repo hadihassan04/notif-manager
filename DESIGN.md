@@ -1,11 +1,11 @@
-# Notif Manager Product and UX Design
+# Tide Product and UX Design
 
 Status: Working specification  
 Last updated: 2026-07-19
 
 ## Product thesis
 
-Notif Manager reduces routine notification interruptions without making important notifications easy to miss.
+Tide reduces routine notification interruptions without making important notifications easy to miss.
 
 Routine notifications wait by default. They are released at predictable delivery times. Open hours temporarily allow normal interruptions, while priority apps always pass through.
 
@@ -58,7 +58,7 @@ Use these terms consistently:
 
 | Use | Meaning |
 | --- | --- |
-| Inbox | Notifications managed by Notif Manager |
+| Inbox | Notifications managed by Tide |
 | Waiting | Routine notifications held until a release event |
 | Delivery time | A scheduled time that releases everything waiting |
 | Open hours | A period that releases the queue and allows routine notifications to interrupt |
@@ -104,9 +104,9 @@ Primary action: **Continue**
 Show three full-width status rows:
 
 1. **Notification access** — Required  
-   “Lets Notif Manager hold and organize notifications from other apps.”
+   “Lets Tide hold and organize notifications from other apps.”
 2. **Delivery notifications** — Required  
-   “Lets Notif Manager tell you when waiting notifications are released.”
+   “Lets Tide tell you when waiting notifications are released.”
 3. **Precise delivery** — Optional  
    “Improves delivery accuracy. Without it, Android may deliver a little later.”
 

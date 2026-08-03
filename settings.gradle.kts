@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "NotifManager"
+rootProject.name = "Tide"
 include(":app")

@@ -45,7 +45,7 @@ class NotificationPublisher(private val context: Context) {
         )
 
         val notification = NotificationCompat.Builder(context, DIGEST_CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setSmallIcon(R.drawable.ic_stat_tide)
             .setContentTitle("Waiting notifications delivered")
             .setContentText("${notifications.size} notifications from $topApps")
             .setStyle(NotificationCompat.BigTextStyle().bigText("${notifications.size} notifications were released. Top apps: $topApps."))

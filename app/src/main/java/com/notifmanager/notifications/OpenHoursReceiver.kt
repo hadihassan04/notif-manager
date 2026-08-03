@@ -3,7 +3,7 @@ package com.notifmanager.notifications
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import com.notifmanager.NotifManagerApp
+import com.notifmanager.TideApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -16,7 +16,7 @@ class OpenHoursReceiver : BroadcastReceiver() {
         val pendingResult = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                val app = context.applicationContext as NotifManagerApp
+                val app = context.applicationContext as TideApp
                 app.repository.handleOpenHoursStart(windowId, triggerAtMillis)
             } finally {
                 pendingResult.finish()
