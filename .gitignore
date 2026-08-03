@@ -12,3 +12,7 @@ captures/
 *.jks
 *.keystore
 keystore.properties
+
+# R8 mappings for shipped releases: needed to read obfuscated crash reports,
+# but too large to keep in git. Back these up or upload to the Play Console.
+release-mappings/

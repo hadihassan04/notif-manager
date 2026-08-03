@@ -75,6 +75,23 @@ ksp {
     arg("room.schemaLocation", "$projectDir/schemas")
 }
 
+// R8 obfuscates release stack traces; mapping.txt is the only way to read them
+// back. It lives under build/ and dies on clean, so archive one zip per version
+// (the raw file is ~32 MB, the zip ~2.4 MB).
+val archiveReleaseMapping = tasks.register<Zip>("archiveReleaseMapping") {
+    description = "Archives the release R8 mapping so crash reports stay readable."
+    val version = "${android.defaultConfig.versionName}-${android.defaultConfig.versionCode}"
+    from(layout.buildDirectory.dir("outputs/mapping/release")) {
+        include("mapping.txt", "seeds.txt", "usage.txt", "configuration.txt")
+    }
+    archiveFileName.set("mapping-$version.zip")
+    destinationDirectory.set(rootProject.layout.projectDirectory.dir("release-mappings"))
+}
+
+tasks.matching { it.name == "assembleRelease" }.configureEach {
+    finalizedBy(archiveReleaseMapping)
+}
+
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
     implementation(composeBom)
