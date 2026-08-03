@@ -15,11 +15,11 @@ val keystoreProperties = Properties().apply {
 }
 
 android {
-    namespace = "com.notifmanager"
+    namespace = "com.tide.app"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.notifmanager"
+        applicationId = "com.tide.app"
         minSdk = 26
         targetSdk = 36
         versionCode = 1
