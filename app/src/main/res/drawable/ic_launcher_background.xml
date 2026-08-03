@@ -1,23 +1,22 @@
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Sky. Drawn past the canvas edge so no mask can reveal a seam. -->
-    <path
-        android:fillColor="#D5E6F7"
-        android:pathData="M-4,-4h116v116h-116z" />
-    <!-- Layered water, palest at the surface to deepest at the bottom. -->
-    <path
-        android:fillColor="#BFD9F1"
-        android:pathData="M-4,64 C14,60 30,75 54,75 C80,75 94,62 112,66 V112 H-4 Z" />
-    <path
-        android:fillColor="#8FBBDE"
-        android:pathData="M-4,79 C16,71 32,88 56,88 C80,88 94,75 112,79 V112 H-4 Z" />
-    <path
-        android:fillColor="#4A87BA"
-        android:pathData="M-4,92 C16,85 34,99 58,99 C82,99 96,90 112,92 V112 H-4 Z" />
-    <path
-        android:fillColor="#1E4E79"
-        android:pathData="M-4,101 C18,96 36,107 60,107 C84,107 98,101 112,102 V112 H-4 Z" />
+    <!-- Open water, lit at the surface and deep at the floor. Drawn past the
+         canvas edge so no launcher mask can reveal a seam. -->
+    <path android:pathData="M-4,-4h116v116h-116z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="54"
+                android:startY="-4"
+                android:endX="54"
+                android:endY="112">
+                <item android:offset="0" android:color="#FF3E86C0" />
+                <item android:offset="1" android:color="#FF12395C" />
+            </gradient>
+        </aapt:attr>
+    </path>
 </vector>
