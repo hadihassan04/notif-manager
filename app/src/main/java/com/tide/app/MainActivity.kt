@@ -2093,7 +2093,7 @@ private fun SettingsScreen(
         item {
             PermissionCard(
                 title = "Precise delivery",
-                body = "Optional. Improves delivery accuracy; Android may deliver a little later without it.",
+                body = "Delivers batches at the exact minute you chose.",
                 ready = permissions.exactAlarmReady,
                 action = "Open settings",
                 onClick = {
@@ -2321,7 +2321,7 @@ private fun OnboardingScreen(
             if (!canContinue) {
                 Text(
                     if (pagerState.currentPage == 1) {
-                        "Allow both required permissions to continue. Precise delivery is optional."
+                        "Allow the notification permissions above to continue."
                     } else {
                         "Keep at least one delivery time enabled so waiting notifications have a safe release time."
                     },
@@ -2453,7 +2453,7 @@ private fun OnboardingPermissionsPage(
             Column(verticalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
                 Text("Required setup", style = MaterialTheme.typography.headlineMedium)
                 Text(
-                    "Tide needs the first two permissions to hold and safely deliver your notifications.",
+                    "Tide needs these permissions to hold your notifications and deliver them on time.",
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -2462,7 +2462,7 @@ private fun OnboardingPermissionsPage(
         item {
             PermissionCard(
                 title = "Notification access",
-                body = "Required · Lets Tide hold and organize notifications from other apps.",
+                body = "Lets Tide hold and organize notifications from other apps.",
                 ready = permissions.listenerEnabled,
                 action = "Open settings",
                 onClick = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) },
@@ -2471,7 +2471,7 @@ private fun OnboardingPermissionsPage(
         item {
             PermissionCard(
                 title = "Delivery notifications",
-                body = "Required · Lets Tide tell you when waiting notifications are released.",
+                body = "Lets Tide tell you when waiting notifications are released.",
                 ready = permissions.canPost,
                 action = "Allow",
                 onClick = onRequestPostNotifications,
@@ -2480,7 +2480,7 @@ private fun OnboardingPermissionsPage(
         item {
             PermissionCard(
                 title = "Precise delivery",
-                body = "Optional · Improves delivery accuracy. Android may deliver a little later without it.",
+                body = "Lets Tide deliver batches at the exact minute you chose.",
                 ready = permissions.exactAlarmReady,
                 action = "Open settings",
                 onClick = {
