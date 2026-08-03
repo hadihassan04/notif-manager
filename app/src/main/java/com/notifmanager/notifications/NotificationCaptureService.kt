@@ -45,6 +45,7 @@ class NotificationCaptureService : NotificationListenerService() {
             category = sbn.notification.category,
             postedAtMillis = sbn.postTime,
             batchesByDefault = appProfile.batchesByDefault,
+            isMediaPlayback = NotificationCaptureFilter.isMediaPlayback(sbn, appProfile),
         )
 
         scope.launch {

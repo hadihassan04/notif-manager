@@ -18,6 +18,7 @@ data class IncomingNotification(
     val category: String?,
     val postedAtMillis: Long,
     val batchesByDefault: Boolean = true,
+    val isMediaPlayback: Boolean = false,
 )
 
 data class RuleDecision(
@@ -37,6 +38,9 @@ class RuleEngine(private val zoneId: ZoneId = ZoneId.systemDefault()) {
         channelRules: List<ChannelRuleEntity>,
         defaultDeliveryMode: DeliveryMode = DeliveryMode.BATCH,
     ): RuleDecision {
+        if (incoming.isMediaPlayback) {
+            return RuleDecision(DeliveryMode.INSTANT, RuleSource.MEDIA_PLAYBACK, null, null)
+        }
         val nextRelease = scheduleCalculator.nextReleases(incoming.postedAtMillis, schedules)
             .minByOrNull { it.triggerAtMillis }
         if (nextRelease == null) {

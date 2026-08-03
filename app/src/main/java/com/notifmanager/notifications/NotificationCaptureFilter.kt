@@ -9,8 +9,9 @@ import android.service.notification.StatusBarNotification
 data class CapturedAppProfile(
     val isSystemApp: Boolean,
     val hasLauncherActivity: Boolean,
+    val isMediaPlayer: Boolean = false,
 ) {
-    val batchesByDefault: Boolean = !isSystemApp && hasLauncherActivity
+    val batchesByDefault: Boolean = !isSystemApp && hasLauncherActivity && !isMediaPlayer
 }
 
 object NotificationCaptureFilter {
@@ -26,7 +27,28 @@ object NotificationCaptureFilter {
         return CapturedAppProfile(
             isSystemApp = appInfo?.isSystemApp() ?: true,
             hasLauncherActivity = packageManager.getLaunchIntentForPackage(packageName) != null,
+            isMediaPlayer = isMediaPlayerPackage(packageName),
         )
+    }
+
+    /**
+     * Media/transport notifications carry the playback controls. Batching them cancels the
+     * notification, which strips the controls and can tear down the app's foreground playback
+     * service, so they must always be delivered instantly.
+     */
+    fun isMediaPlayback(sbn: StatusBarNotification, appProfile: CapturedAppProfile): Boolean {
+        val notification = sbn.notification
+        if (notification.category == Notification.CATEGORY_TRANSPORT) return true
+        if (notification.extras.containsKey(MEDIA_SESSION_EXTRA)) return true
+        val template = notification.extras.getString(Notification.EXTRA_TEMPLATE)
+        if (template != null && template.contains("MediaStyle")) return true
+        return appProfile.isMediaPlayer
+    }
+
+    internal fun isMediaPlayerPackage(packageName: String): Boolean {
+        val lower = packageName.lowercase()
+        return MEDIA_PLAYER_PACKAGES.contains(lower) ||
+            MEDIA_PLAYER_HINTS.any { lower.contains(it) }
     }
 
     fun shouldStore(
@@ -83,6 +105,90 @@ object NotificationCaptureFilter {
         return flags and ApplicationInfo.FLAG_SYSTEM != 0 ||
             flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP != 0
     }
+
+    private const val MEDIA_SESSION_EXTRA = "android.mediaSession"
+
+    private val MEDIA_PLAYER_PACKAGES = setOf(
+        // Video
+        "com.google.android.youtube",
+        "com.google.android.apps.youtube.music",
+        "com.google.android.youtube.tv",
+        "com.netflix.mediaclient",
+        "com.amazon.avod.thirdpartyclient",
+        "com.disney.disneyplus",
+        "com.hulu.plus",
+        "com.hbo.hbonow",
+        "com.wbd.stream",
+        "tv.twitch.android.app",
+        "com.plexapp.android",
+        "com.jellyfin.mobile",
+        "org.jellyfin.mobile",
+        "com.mxtech.videoplayer.ad",
+        "com.mxtech.videoplayer.pro",
+        "is.xyz.mpv",
+        "org.videolan.vlc",
+        "com.instantbits.cast.webvideo",
+        "com.brouken.player",
+        "com.google.android.apps.photos",
+        // Music / audio
+        "com.spotify.music",
+        "com.spotify.lite",
+        "com.apple.android.music",
+        "com.amazon.mp3",
+        "deezer.android.app",
+        "com.aspiro.tidal",
+        "com.soundcloud.android",
+        "com.bandcamp.android",
+        "com.pandora.android",
+        "com.clearchannel.iheartradio.controller",
+        "tunein.player",
+        "com.audible.application",
+        "au.com.shiftyjelly.pocketcasts",
+        "fm.castbox.audiobook.radio.podcast",
+        "com.google.android.apps.podcasts",
+        "de.danoeh.antennapod",
+        "org.videolan.vlc.debug",
+        "com.kapp.youtube.final",
+        "com.maxmpz.audioplayer",
+        "com.jrtstudio.AnotherMusicPlayer",
+        "code.name.monkey.retromusic",
+        "com.simplecity.amp_library",
+        "org.oxycblt.auxio",
+        "com.shabinder.spotiflyer",
+        "com.awedea.nyx",
+        "io.github.muntashirakon.music",
+        "com.doubleTwist.androidPlayer",
+        "com.foobar2000.foobar2000",
+        "com.n7mobile.nplayer",
+    )
+
+    private val MEDIA_PLAYER_HINTS = listOf(
+        "musicplayer",
+        "videoplayer",
+        "mediaplayer",
+        "audioplayer",
+        "podcast",
+        "youtube",
+        "spotify",
+        "vlc",
+        "mpv",
+        "netflix",
+        "deezer",
+        "soundcloud",
+        "audiobook",
+        ".music",
+        "music.player",
+        "kodi",
+        "poweramp",
+        "musicolet",
+        "blackplayer",
+        "phonograph",
+        "vanced",
+        "newpipe",
+        "libretube",
+        "grayjay",
+        "smarttube",
+    )
 
     private val TRANSIENT_SYSTEM_CATEGORIES = setOf(
         Notification.CATEGORY_PROGRESS,

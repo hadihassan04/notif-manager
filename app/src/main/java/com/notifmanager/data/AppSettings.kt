@@ -54,6 +54,16 @@ class AppSettings(private val context: Context) {
         prefs[NON_BATCHABLE_DEFAULTS_NORMALIZED] ?: false
     }
 
+    val mediaPlayerDefaultsNormalized: Flow<Boolean> = context.settingsDataStore.data.map { prefs ->
+        prefs[MEDIA_PLAYER_DEFAULTS_NORMALIZED] ?: false
+    }
+
+    suspend fun setMediaPlayerDefaultsNormalized(normalized: Boolean) {
+        context.settingsDataStore.edit { prefs ->
+            prefs[MEDIA_PLAYER_DEFAULTS_NORMALIZED] = normalized
+        }
+    }
+
     suspend fun setDynamicColorEnabled(enabled: Boolean) {
         context.settingsDataStore.edit { prefs ->
             prefs[DYNAMIC_COLOR_ENABLED] = enabled
@@ -122,5 +132,6 @@ class AppSettings(private val context: Context) {
         val TEMPORARY_OPEN_UNTIL_MILLIS = longPreferencesKey("temporary_open_until_millis")
         val SETUP_DISMISSED_ONCE = booleanPreferencesKey("setup_dismissed_once")
         val NON_BATCHABLE_DEFAULTS_NORMALIZED = booleanPreferencesKey("non_batchable_defaults_normalized")
+        val MEDIA_PLAYER_DEFAULTS_NORMALIZED = booleanPreferencesKey("media_player_defaults_normalized")
     }
 }

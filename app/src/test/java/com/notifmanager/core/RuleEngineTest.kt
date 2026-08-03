@@ -172,6 +172,30 @@ class RuleEngineTest {
         assertEquals("2026-06-22-batch-2-1140", decision.batchId)
     }
 
+    @Test
+    fun mediaPlaybackStaysInstantEvenWhenTheAppIsSetToBatch() {
+        val batchedPlayer = AppRuleEntity(
+            packageName = "com.spotify.music",
+            appLabel = "Spotify",
+            deliveryMode = DeliveryMode.BATCH,
+            updatedAtMillis = 0,
+        )
+
+        val decision = engine.decide(
+            incoming = incomingAt(hour = 15).copy(
+                packageName = "com.spotify.music",
+                isMediaPlayback = true,
+            ),
+            schedules = listOf(schedule),
+            appRules = listOf(batchedPlayer),
+            channelRules = emptyList(),
+        )
+
+        assertEquals(DeliveryMode.INSTANT, decision.deliveryMode)
+        assertEquals(RuleSource.MEDIA_PLAYBACK, decision.ruleSource)
+        assertEquals(null, decision.batchId)
+    }
+
     private fun incomingAt(day: Int = 21, hour: Int, channelId: String? = null): IncomingNotification {
         val millis = LocalDateTime.of(2026, 6, day, hour, 0).atZone(zone).toInstant().toEpochMilli()
         return IncomingNotification(

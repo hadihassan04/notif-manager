@@ -130,6 +130,7 @@ class Repository(
 
     suspend fun capture(incoming: IncomingNotification): NotificationEntity {
         normalizeNonBatchableDefaults()
+        normalizeMediaPlayerDefaults()
         val schedules = dao.schedules()
         val instantOverride = settings.temporaryOpenUntilMillis.first() > incoming.postedAtMillis ||
             openHoursCalculator.isOpenAt(incoming.postedAtMillis, dao.instantWindows())
@@ -414,6 +415,25 @@ class Repository(
         settings.setNonBatchableDefaultsNormalized(true)
     }
 
+    /** Existing installs may have media players stuck on batch delivery; flip them once. */
+    suspend fun normalizeMediaPlayerDefaults() {
+        if (settings.mediaPlayerDefaultsNormalized.first()) return
+        dao.appRules()
+            .filter {
+                it.deliveryMode == DeliveryMode.BATCH &&
+                    NotificationCaptureFilter.isMediaPlayerPackage(it.packageName)
+            }
+            .forEach { rule ->
+                dao.upsertAppRule(
+                    rule.copy(
+                        deliveryMode = DeliveryMode.INSTANT,
+                        updatedAtMillis = System.currentTimeMillis(),
+                    ),
+                )
+            }
+        settings.setMediaPlayerDefaultsNormalized(true)
+    }
+
     private suspend fun ensureAppRule(packageName: String, appLabel: String, batchesByDefault: Boolean) {
         if (dao.appRuleFor(packageName) == null) {
             dao.upsertAppRule(
@@ -630,7 +650,6 @@ class Repository(
             "snapchat",
             "tiktok",
             "reddit",
-            "youtube",
             "outlook",
         )
 
@@ -651,6 +670,12 @@ class Repository(
             "calendar", "alarm", "clock",
             // Security
             "authenticator", "2fa",
+            // Media players — batching cancels playback controls
+            "com.google.android.youtube", "com.google.android.apps.youtube.music",
+            "com.spotify.music", "org.videolan.vlc",
+            "youtube", "spotify", "vlc", "mpv", "netflix", "deezer", "soundcloud",
+            "musicplayer", "videoplayer", "mediaplayer", "audioplayer", "podcast",
+            "poweramp", "kodi", "audiobook",
         )
     }
 }

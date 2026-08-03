@@ -14,6 +14,7 @@ enum class RuleSource {
     APP,
     CHANNEL,
     SCHEDULE_INACTIVE,
+    MEDIA_PLAYBACK,
 }
 
 @Entity(
