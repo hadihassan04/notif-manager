@@ -32,6 +32,7 @@ data class InstalledApp(
     val notificationCount: Int,
     val isRecommendedHeavyApp: Boolean,
     val isRecommendedInstantApp: Boolean = false,
+    val isMediaPlayer: Boolean = false,
 )
 
 data class InboxBatch(
@@ -67,6 +68,7 @@ private data class AppCatalogEntry(
     val hasLauncherActivity: Boolean,
     val isRecommendedHeavyApp: Boolean,
     val isRecommendedInstantApp: Boolean,
+    val isMediaPlayer: Boolean,
 )
 
 class Repository(
@@ -227,7 +229,13 @@ class Repository(
                 AppRuleEntity(
                     packageName = app.packageName,
                     appLabel = app.label,
-                    deliveryMode = if (app.packageName in priorityPackages) DeliveryMode.INSTANT else DeliveryMode.BATCH,
+                    // Batching a player would cancel its playback controls, so the
+                    // selection cannot turn one off.
+                    deliveryMode = if (app.packageName in priorityPackages || app.isMediaPlayer) {
+                        DeliveryMode.INSTANT
+                    } else {
+                        DeliveryMode.BATCH
+                    },
                     updatedAtMillis = now,
                 ),
             )
@@ -478,6 +486,7 @@ class Repository(
                     notificationCount = summary?.notificationCount ?: 0,
                     isRecommendedHeavyApp = entry.isRecommendedHeavyApp,
                     isRecommendedInstantApp = entry.isRecommendedInstantApp,
+                    isMediaPlayer = entry.isMediaPlayer,
                 )
             }
             .plus(
@@ -493,6 +502,7 @@ class Repository(
                             isSystemApp = profile.isSystemApp,
                             notificationCount = summary.notificationCount,
                             isRecommendedHeavyApp = false,
+                            isMediaPlayer = NotificationCaptureFilter.isMediaPlayerPackage(packageName),
                         )
                     },
             )
@@ -533,6 +543,7 @@ class Repository(
                     hasLauncherActivity = true,
                     isRecommendedHeavyApp = isRecommendedHeavyApp(it.packageName, label),
                     isRecommendedInstantApp = isRecommendedInstantApp(it.packageName, label),
+                    isMediaPlayer = NotificationCaptureFilter.isMediaPlayerPackage(it.packageName),
                 )
             }
     }
@@ -605,13 +616,25 @@ class Repository(
     }
 
     private fun isRecommendedHeavyApp(packageName: String, label: String): Boolean {
-        val haystack = (packageName + " " + label).lowercase()
-        return RECOMMENDED_HEAVY_APP_HINTS.any { haystack.contains(it) }
+        return matchesHint(packageName, label, RECOMMENDED_HEAVY_APP_HINTS)
     }
 
     private fun isRecommendedInstantApp(packageName: String, label: String): Boolean {
+        return matchesHint(packageName, label, RECOMMENDED_INSTANT_HINTS)
+    }
+
+    /**
+     * A hint matches the start of a word in the package name or the label, not any
+     * substring of it: "ally" should recognise Ally Bank without also claiming
+     * "com.rallyhealth". Hints written as package fragments (anything with a dot)
+     * are matched against the whole package name instead.
+     */
+    private fun matchesHint(packageName: String, label: String, hints: List<String>): Boolean {
         val haystack = (packageName + " " + label).lowercase()
-        return RECOMMENDED_INSTANT_HINTS.any { haystack.contains(it) }
+        val words = haystack.split(NON_WORD_REGEX).filter { it.isNotBlank() }
+        return hints.any { hint ->
+            if (hint.contains('.')) haystack.contains(hint) else words.any { it.startsWith(hint) }
+        }
     }
 
     private fun formatMinutes(minutes: Int): String {
@@ -647,6 +670,8 @@ class Repository(
         const val UNBATCHED_BATCH_ID = "unbatched"
         private const val RECENT_HISTORY_LIMIT = 600
 
+        private val NON_WORD_REGEX = Regex("""[^a-z0-9]+""")
+
         private val RECOMMENDED_HEAVY_APP_HINTS = listOf(
             "instagram",
             "facebook",
@@ -665,29 +690,40 @@ class Repository(
             "outlook",
         )
 
+        /**
+         * What onboarding recommends letting through: the things whose worth depends
+         * on arriving now — someone reaching you, money moving, a door being opened,
+         * a ride or a delivery on its way, a reminder for a fixed time. Anything a
+         * bank or a person sends qualifies; feeds and offers do not.
+         *
+         * Media players are absent on purpose. They are not recommended, they are
+         * forced instant (`isMediaPlayer`), because batching one stops its audio.
+         * Authenticators are absent too: a code is read in the app that asked for it.
+         */
         private val RECOMMENDED_INSTANT_HINTS = listOf(
-            // Communication — phone, SMS, messaging
+            // Calls and messages
             "com.android.phone", "com.android.dialer", "com.google.android.dialer",
             "com.android.mms", "com.google.android.apps.messaging", "com.samsung.android.messaging",
             "phone", "dialer", "messaging", "messages", "sms", "mms",
+            "whatsapp", "com.whatsapp.w4b", "signal", "telegram", "messenger",
             // Email
-            "mail", "email", "gmail", "outlook", "yahoo",
-            // Banking & payments
-            "bank", "chase", "wellsfargo", "citibank", "amex", "paypal", "venmo", "cashapp",
-            // Navigation & rides
-            "maps", "waze", "navigation", "uber", "lyft",
-            // Food delivery
-            "doordash", "grubhub", "ubereats", "postmates",
-            // Time-sensitive system
-            "calendar", "alarm", "clock",
-            // Security
-            "authenticator", "2fa",
-            // Media players — batching cancels playback controls
-            "com.google.android.youtube", "com.google.android.apps.youtube.music",
-            "com.spotify.music", "org.videolan.vlc",
-            "youtube", "spotify", "vlc", "mpv", "netflix", "deezer", "soundcloud",
-            "musicplayer", "videoplayer", "mediaplayer", "audioplayer", "podcast",
-            "poweramp", "kodi", "audiobook",
+            "mail", "email", "gmail", "outlook", "yahoo", "proton", "fastmail",
+            // Banks, cards and payments
+            "bank", "banking", "chase", "wellsfargo", "citi", "citibank", "amex",
+            "americanexpress", "bofa", "bankofamerica", "capitalone", "discover",
+            "usbank", "pnc", "truist", "ally", "sofi", "schwab", "fidelity",
+            "hsbc", "barclays", "lloyds", "natwest", "santander", "halifax", "monzo",
+            "starling", "revolut", "n26", "wise", "curve", "creditunion", "cu",
+            "paypal", "venmo", "cashapp", "zelle", "wallet", "klarna", "visa",
+            "mastercard", "coinbase",
+            // Navigation, rides and deliveries
+            "maps", "waze", "navigation", "uber", "lyft", "bolt", "grab", "careem",
+            "doordash", "grubhub", "ubereats", "postmates", "deliveroo", "justeat",
+            "instacart", "fedex", "ups", "dhl", "usps", "royalmail",
+            // Fixed times
+            "calendar", "alarm", "clock", "reminders",
+            // Home and safety
+            "nest", "ring", "arlo", "adt", "simplisafe", "hue",
         )
     }
 }

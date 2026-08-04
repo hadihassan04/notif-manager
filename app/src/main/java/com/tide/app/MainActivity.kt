@@ -2456,6 +2456,13 @@ private fun OnboardingScreen(
     }
     val permissions = rememberPermissionStatus(context, permissionRefresh)
     val selectedInstantPackages = remember { mutableStateListOf<String>() }
+    // Players are instant whatever happens here, so they start counted rather than
+    // sitting unticked in a list the user is being asked to complete.
+    LaunchedEffect(installedApps) {
+        installedApps
+            .filter { it.isMediaPlayer && !it.isSystemApp && it.packageName !in selectedInstantPackages }
+            .forEach { selectedInstantPackages.add(it.packageName) }
+    }
     val nonSystemApps = installedApps
         .filter { !it.isSystemApp }
         .sortedWith(compareByDescending<InstalledApp> { it.isRecommendedInstantApp }.thenByDescending { it.isRecommendedHeavyApp }.thenBy { it.label })
@@ -2748,8 +2755,9 @@ private fun OnboardingAppsPage(nonSystemApps: List<InstalledApp>, selectedInstan
             }
         }
         item { MediaAppsNotice(modifier = Modifier.padding(bottom = MdSpacing.xs)) }
-        val recommended = nonSystemApps.filter { it.isRecommendedInstantApp }
-        val rest = nonSystemApps.filter { !it.isRecommendedInstantApp }
+        val players = nonSystemApps.filter { it.isMediaPlayer }
+        val recommended = nonSystemApps.filter { it.isRecommendedInstantApp && !it.isMediaPlayer }
+        val rest = nonSystemApps.filter { !it.isRecommendedInstantApp && !it.isMediaPlayer }
         if (nonSystemApps.isEmpty()) {
             item {
                 Text(
@@ -2758,13 +2766,22 @@ private fun OnboardingAppsPage(nonSystemApps: List<InstalledApp>, selectedInstan
                 )
             }
         }
+        if (players.isNotEmpty()) {
+            item {
+                OnboardingSectionLabel(
+                    title = "Always instant",
+                    body = "Music and video players, which stop playing if their notification is held.",
+                )
+            }
+            items(players, key = { "media_${it.packageName}" }) { app ->
+                OnboardingAppRow(app, selectedInstantPackages, locked = true)
+            }
+        }
         if (recommended.isNotEmpty()) {
             item {
-                Text(
-                    "Recommended",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = MdSpacing.xs),
+                OnboardingSectionLabel(
+                    title = "Recommended",
+                    body = "Calls, messages, email, banks, deliveries and anything tied to a time.",
                 )
             }
             items(recommended, key = { "rec_${it.packageName}" }) { app ->
@@ -2772,14 +2789,7 @@ private fun OnboardingAppsPage(nonSystemApps: List<InstalledApp>, selectedInstan
             }
         }
         if (rest.isNotEmpty()) {
-            item {
-                Text(
-                    "All apps",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = MdSpacing.xs),
-                )
-            }
+            item { OnboardingSectionLabel(title = "All apps") }
             items(rest, key = { "all_${it.packageName}" }) { app ->
                 OnboardingAppRow(app, selectedInstantPackages)
             }
@@ -2788,13 +2798,38 @@ private fun OnboardingAppsPage(nonSystemApps: List<InstalledApp>, selectedInstan
 }
 
 @Composable
-private fun OnboardingAppRow(app: InstalledApp, selectedInstantPackages: MutableList<String>) {
-    val selected = app.packageName in selectedInstantPackages
+private fun OnboardingSectionLabel(title: String, body: String? = null) {
+    Column(
+        modifier = Modifier.padding(top = MdSpacing.xs),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Text(
+            title,
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (body != null) {
+            Text(
+                body,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun OnboardingAppRow(
+    app: InstalledApp,
+    selectedInstantPackages: MutableList<String>,
+    locked: Boolean = false,
+) {
+    val selected = locked || app.packageName in selectedInstantPackages
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .clip(MaterialTheme.shapes.medium)
-            .clickable {
+            .clickable(enabled = !locked) {
                 if (selected) selectedInstantPackages.remove(app.packageName)
                 else selectedInstantPackages.add(app.packageName)
             },
@@ -2810,15 +2845,23 @@ private fun OnboardingAppRow(app: InstalledApp, selectedInstantPackages: Mutable
             Column(Modifier.weight(1f)) {
                 Text(app.label, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
-                    if (selected) "Instant · always gets through" else "Batch · waits for delivery",
+                    when {
+                        locked -> "Instant · keeps playback working"
+                        selected -> "Instant · always gets through"
+                        else -> "Batch · waits for delivery"
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            Switch(checked = selected, onCheckedChange = {
-                if (selected) selectedInstantPackages.remove(app.packageName)
-                else selectedInstantPackages.add(app.packageName)
-            })
+            Switch(
+                checked = selected,
+                enabled = !locked,
+                onCheckedChange = {
+                    if (selected) selectedInstantPackages.remove(app.packageName)
+                    else selectedInstantPackages.add(app.packageName)
+                },
+            )
         }
     }
 }

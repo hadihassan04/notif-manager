@@ -6,6 +6,14 @@ import org.junit.Test
 
 class NotificationCaptureFilterTest {
     @Test
+    fun recognisesMediaPlayersByPackage() {
+        assertTrue(NotificationCaptureFilter.isMediaPlayerPackage("com.spotify.music"))
+        assertTrue(NotificationCaptureFilter.isMediaPlayerPackage("com.google.android.youtube"))
+        assertTrue(NotificationCaptureFilter.isMediaPlayerPackage("org.videolan.vlc"))
+        assertFalse(NotificationCaptureFilter.isMediaPlayerPackage("com.whatsapp"))
+    }
+
+    @Test
     fun ignoresCommonDeviceStatusNoise() {
         assertTrue(NotificationCaptureFilter.isKnownNoise("android", "Flashlight on", null))
         assertTrue(NotificationCaptureFilter.isKnownNoise("com.backup", "Backing up", "7%"))
