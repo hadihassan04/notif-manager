@@ -209,6 +209,27 @@ class Repository(
         dao.deleteChannelRule(packageName, channelId)
     }
 
+    /**
+     * Bulk mode change from the app list. Players are skipped when the target is batch:
+     * cancelling a playback notification would stop the audio, so that one move is not
+     * theirs to make.
+     */
+    suspend fun setAppModes(apps: List<InstalledApp>, mode: DeliveryMode) {
+        val now = System.currentTimeMillis()
+        apps
+            .filter { mode == DeliveryMode.INSTANT || !it.isMediaPlayer }
+            .forEach { app ->
+                dao.upsertAppRule(
+                    AppRuleEntity(
+                        packageName = app.packageName,
+                        appLabel = app.label,
+                        deliveryMode = mode,
+                        updatedAtMillis = now,
+                    ),
+                )
+            }
+    }
+
     suspend fun bulkSetInstant(apps: List<InstalledApp>) {
         apps.forEach { app ->
             dao.upsertAppRule(

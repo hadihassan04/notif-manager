@@ -30,12 +30,14 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -58,6 +60,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
@@ -97,6 +103,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationRail
@@ -339,6 +346,10 @@ class MainViewModel(
 
     fun setAppMode(app: InstalledApp, mode: DeliveryMode) {
         viewModelScope.launch { repository.setAppMode(app.packageName, app.label, mode) }
+    }
+
+    fun setAppModes(apps: List<InstalledApp>, mode: DeliveryMode) {
+        viewModelScope.launch { repository.setAppModes(apps, mode) }
     }
 
     fun setChannelMode(channel: ChannelRuleUi, mode: DeliveryMode?) {
@@ -633,6 +644,7 @@ private fun TideRoot(
                             showMediaNotice = !mediaNoticeDismissed,
                             onDismissMediaNotice = viewModel::dismissMediaNotice,
                             onSetAppMode = viewModel::setAppMode,
+                            onSetAppModes = viewModel::setAppModes,
                             onSetChannelMode = viewModel::setChannelMode,
                         )
                     }
@@ -1511,6 +1523,7 @@ private fun openOriginalNotification(context: Context, item: NotificationEntity)
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun RulesScreen(
     rules: List<AppRuleUi>,
@@ -1518,48 +1531,280 @@ private fun RulesScreen(
     showMediaNotice: Boolean,
     onDismissMediaNotice: () -> Unit,
     onSetAppMode: (InstalledApp, DeliveryMode) -> Unit,
+    onSetAppModes: (List<InstalledApp>, DeliveryMode) -> Unit,
     onSetChannelMode: (ChannelRuleUi, DeliveryMode?) -> Unit,
 ) {
     var query by remember { mutableStateOf("") }
-    var modeFilter by remember { mutableStateOf<DeliveryMode?>(null) }
-    val visibleRules = remember(rules, showSystemApps, query, modeFilter) {
+    val selectedPackages = remember { mutableStateListOf<String>() }
+    var openedPackage by remember { mutableStateOf<String?>(null) }
+
+    val visibleRules = remember(rules, showSystemApps, query) {
         rules
             .filter { showSystemApps || !it.app.isSystemApp }
             .filter { it.matches(query) }
-            .filter { modeFilter == null || it.app.mode == modeFilter || it.channels.any { channel -> channel.mode == modeFilter } }
+    }
+    val instantRules = visibleRules.filter { it.app.mode == DeliveryMode.INSTANT }
+    val batchRules = visibleRules.filter { it.app.mode == DeliveryMode.BATCH }
+    val selecting = selectedPackages.isNotEmpty()
+    // Drawn from every rule, not the visible ones: a selection made before a search was
+    // typed still moves the apps the count promised.
+    val selectedApps = rules.map { it.app }.filter { it.packageName in selectedPackages }
+
+    fun toggle(packageName: String) {
+        if (packageName in selectedPackages) selectedPackages.remove(packageName)
+        else selectedPackages.add(packageName)
     }
 
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(MdSpacing.sm),
-        verticalArrangement = Arrangement.spacedBy(MdSpacing.sm),
+    Column(Modifier.fillMaxSize()) {
+        LazyVerticalGrid(
+            columns = GridCells.Adaptive(minSize = 84.dp),
+            modifier = Modifier.weight(1f),
+            contentPadding = PaddingValues(MdSpacing.sm),
+            verticalArrangement = Arrangement.spacedBy(MdSpacing.sm),
+            horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs),
+        ) {
+            fun fullWidth(key: String, content: @Composable () -> Unit) {
+                item(key = key, span = { GridItemSpan(maxLineSpan) }) { content() }
+            }
+
+            fullWidth("header") {
+                Column(verticalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
+                    Text("Choose what can interrupt you", style = MaterialTheme.typography.headlineSmall)
+                    Text(
+                        "Hold an app to select it, then move what you picked to the other side.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            if (showMediaNotice) {
+                fullWidth("media_notice") { MediaAppsNotice(onDismiss = onDismissMediaNotice) }
+            }
+            fullWidth("search") {
+                SearchField(query, onQueryChange = { query = it }, placeholder = "Search apps and channels")
+            }
+
+            if (visibleRules.isEmpty()) {
+                fullWidth("empty") {
+                    EmptyState("No apps found", "Try a different search or enable system apps.")
+                }
+            }
+
+            listOf(DeliveryMode.INSTANT to instantRules, DeliveryMode.BATCH to batchRules)
+                .filter { (_, sectionRules) -> sectionRules.isNotEmpty() }
+                .forEach { (mode, sectionRules) ->
+                    fullWidth("section_${mode.name}") {
+                        RulesSectionHeader(mode = mode, count = sectionRules.size)
+                    }
+                    items(sectionRules, key = { "${mode.name}_${it.app.packageName}" }) { appRule ->
+                        AppTile(
+                            appRule = appRule,
+                            selected = appRule.app.packageName in selectedPackages,
+                            onClick = {
+                                if (selecting) toggle(appRule.app.packageName)
+                                else openedPackage = appRule.app.packageName
+                            },
+                            onLongClick = { toggle(appRule.app.packageName) },
+                        )
+                    }
+                }
+        }
+
+        AnimatedVisibility(visible = selecting) {
+            SelectionBar(
+                count = selectedPackages.size,
+                onClear = { selectedPackages.clear() },
+                onMove = { mode ->
+                    onSetAppModes(selectedApps, mode)
+                    selectedPackages.clear()
+                },
+            )
+        }
+    }
+
+    val opened = openedPackage?.let { packageName -> rules.firstOrNull { it.app.packageName == packageName } }
+    if (opened != null) {
+        AppRuleSheet(
+            appRule = opened,
+            onSetAppMode = onSetAppMode,
+            onSetChannelMode = onSetChannelMode,
+            onDismiss = { openedPackage = null },
+        )
+    }
+}
+
+@Composable
+private fun RulesSectionHeader(mode: DeliveryMode, count: Int) {
+    Row(
+        modifier = Modifier.padding(top = MdSpacing.xs),
+        horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        item {
-            Column(verticalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
-                Text("Choose what can interrupt you", style = MaterialTheme.typography.headlineSmall)
-                Text(
-                    "Instant apps reach you the moment they arrive. Batch apps wait for the next delivery time, unless Open hours are on.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+        Icon(
+            mode.icon(),
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(18.dp),
+        )
+        Text(
+            "${mode.label()} · $count",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            when (mode) {
+                DeliveryMode.INSTANT -> "arrive as they happen"
+                DeliveryMode.BATCH -> "wait for a delivery time"
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/**
+ * A drawer tile: icon and name, the way the app is already recognised elsewhere on the
+ * phone. Which half of the screen it sits in carries the mode, so the tile itself only
+ * has to show selection and whether some of the app's channels disagree with it.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun AppTile(
+    appRule: AppRuleUi,
+    selected: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+) {
+    val overriddenChannels = appRule.channels.count { it.mode != null && it.mode != appRule.app.mode }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(MaterialTheme.shapes.medium)
+            .background(if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .padding(vertical = MdSpacing.xs, horizontal = MdSpacing.xxs),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(MdSpacing.xxs),
+    ) {
+        Box {
+            AppIcon(packageName = appRule.app.packageName, label = appRule.app.label, modifier = Modifier.size(48.dp))
+            if (selected) {
+                Icon(
+                    Icons.Filled.CheckCircle,
+                    contentDescription = "Selected",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .size(18.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surface),
+                )
+            } else if (overriddenChannels > 0) {
+                Icon(
+                    Icons.Filled.Tune,
+                    contentDescription = "$overriddenChannels channels set differently",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .size(16.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surface),
                 )
             }
         }
-        if (showMediaNotice) {
-            item { MediaAppsNotice(onDismiss = onDismissMediaNotice) }
-        }
-        item { SearchField(query, onQueryChange = { query = it }, placeholder = "Search apps and channels") }
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
-                FilterChip(selected = modeFilter == null, onClick = { modeFilter = null }, label = { Text("All") })
-                FilterChip(selected = modeFilter == DeliveryMode.INSTANT, onClick = { modeFilter = DeliveryMode.INSTANT }, label = { Text("Instant") })
-                FilterChip(selected = modeFilter == DeliveryMode.BATCH, onClick = { modeFilter = DeliveryMode.BATCH }, label = { Text("Batch") })
+        Text(
+            appRule.app.label,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (selected) {
+                MaterialTheme.colorScheme.onPrimaryContainer
+            } else {
+                MaterialTheme.colorScheme.onSurface
+            },
+            textAlign = TextAlign.Center,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
+private fun SelectionBar(count: Int, onClear: () -> Unit, onMove: (DeliveryMode) -> Unit) {
+    Surface(tonalElevation = 3.dp, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = MdSpacing.sm, vertical = MdSpacing.xs),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs),
+        ) {
+            IconButton(onClick = onClear) {
+                Icon(Icons.Filled.Close, contentDescription = "Clear selection")
+            }
+            Text(
+                "$count selected",
+                style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.weight(1f),
+            )
+            DeliveryMode.entries.forEach { mode ->
+                FilledTonalButton(onClick = { onMove(mode) }) {
+                    Icon(mode.icon(), contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.size(MdSpacing.xxs))
+                    Text(mode.label())
+                }
             }
         }
-        if (visibleRules.isEmpty()) {
-            item { EmptyState("No apps found", "Try a different search or enable system apps.") }
-        }
-        items(visibleRules, key = { it.app.packageName }) { appRule ->
-            AppRuleCard(appRule, onSetAppMode, onSetChannelMode)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AppRuleSheet(
+    appRule: AppRuleUi,
+    onSetAppMode: (InstalledApp, DeliveryMode) -> Unit,
+    onSetChannelMode: (ChannelRuleUi, DeliveryMode?) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = MdSpacing.sm)
+                .padding(bottom = MdSpacing.md),
+            verticalArrangement = Arrangement.spacedBy(MdSpacing.sm),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(MdSpacing.sm),
+            ) {
+                AppIcon(packageName = appRule.app.packageName, label = appRule.app.label, modifier = Modifier.size(48.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(appRule.app.label, style = MaterialTheme.typography.titleLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        appRule.summaryLine(),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            if (appRule.app.isMediaPlayer) {
+                Text(
+                    "A player stays instant: batching one takes away its playback controls and can stop the sound.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                DeliveryModeSelector(appRule.app.mode) { onSetAppMode(appRule.app, it) }
+            }
+            if (appRule.channels.isNotEmpty()) {
+                Text(
+                    "Categories",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                appRule.channels.forEach { channel ->
+                    ChannelRuleRow(channel, appRule.app.mode, onSetChannelMode)
+                }
+            }
         }
     }
 }
@@ -1741,82 +1986,6 @@ private fun TimeChip(
         ) {
             Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(formatMinutes(minutes), style = MaterialTheme.typography.titleMedium)
-        }
-    }
-}
-
-@Composable
-private fun AppRuleCard(
-    appRule: AppRuleUi,
-    onSetAppMode: (InstalledApp, DeliveryMode) -> Unit,
-    onSetChannelMode: (ChannelRuleUi, DeliveryMode?) -> Unit,
-) {
-    var expanded by remember(appRule.app.packageName) { mutableStateOf(false) }
-    Card(
-        modifier = Modifier
-            .fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
-        shape = MaterialTheme.shapes.medium,
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(MdSpacing.sm),
-            verticalArrangement = Arrangement.spacedBy(MdSpacing.sm),
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 56.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(MdSpacing.sm),
-            ) {
-                AppIcon(packageName = appRule.app.packageName, label = appRule.app.label, modifier = Modifier.size(40.dp))
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f, fill = true),
-                ) {
-                    Text(
-                        appRule.app.label,
-                        style = MaterialTheme.typography.titleMedium,
-                        maxLines = 1,
-                        softWrap = false,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Text(
-                        appRule.summaryLine(),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        softWrap = false,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(MdSpacing.sm),
-            ) {
-                Box(Modifier.weight(1f, fill = true)) {
-                    DeliveryModeSelector(appRule.app.mode) { onSetAppMode(appRule.app, it) }
-                }
-                if (appRule.channels.isNotEmpty()) {
-                    IconButton(
-                        onClick = { expanded = !expanded },
-                    ) {
-                        Icon(if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore, contentDescription = "Channels")
-                    }
-                }
-            }
-            AnimatedVisibility(visible = expanded) {
-                Column(verticalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
-                    appRule.channels.forEach { channel ->
-                        ChannelRuleRow(channel, appRule.app.mode, onSetChannelMode)
-                    }
-                }
-            }
         }
     }
 }
