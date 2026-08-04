@@ -1780,8 +1780,18 @@ private fun DeliveryModeSelector(value: DeliveryMode, onValue: (DeliveryMode) ->
             .horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs),
     ) {
-        FilterChip(selected = value == DeliveryMode.BATCH, onClick = { onValue(DeliveryMode.BATCH) }, label = { Text("Batch") })
-        FilterChip(selected = value == DeliveryMode.INSTANT, onClick = { onValue(DeliveryMode.INSTANT) }, label = { Text("Instant") })
+        FilterChip(
+            selected = value == DeliveryMode.BATCH,
+            onClick = { onValue(DeliveryMode.BATCH) },
+            label = { Text("Batch") },
+            leadingIcon = { Icon(DeliveryMode.BATCH.icon(), contentDescription = null, modifier = Modifier.size(18.dp)) },
+        )
+        FilterChip(
+            selected = value == DeliveryMode.INSTANT,
+            onClick = { onValue(DeliveryMode.INSTANT) },
+            label = { Text("Instant") },
+            leadingIcon = { Icon(DeliveryMode.INSTANT.icon(), contentDescription = null, modifier = Modifier.size(18.dp)) },
+        )
     }
 }
 
@@ -1790,12 +1800,21 @@ private fun ChannelModeMenu(value: DeliveryMode?, onValue: (DeliveryMode?) -> Un
     var expanded by remember { mutableStateOf(false) }
     Box {
         OutlinedButton(onClick = { expanded = true }) {
+            value?.let {
+                Icon(it.icon(), contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.size(MdSpacing.xxs))
+            }
             Text(value?.label() ?: "Uses app setting")
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             DropdownMenuItem(text = { Text("Uses app setting") }, onClick = { onValue(null); expanded = false })
-            DropdownMenuItem(text = { Text("Batch") }, onClick = { onValue(DeliveryMode.BATCH); expanded = false })
-            DropdownMenuItem(text = { Text("Instant") }, onClick = { onValue(DeliveryMode.INSTANT); expanded = false })
+            DeliveryMode.entries.forEach { mode ->
+                DropdownMenuItem(
+                    text = { Text(mode.label()) },
+                    leadingIcon = { Icon(mode.icon(), contentDescription = null) },
+                    onClick = { onValue(mode); expanded = false },
+                )
+            }
         }
     }
 }
@@ -3099,6 +3118,12 @@ private fun DeliveryMode.label(): String {
         DeliveryMode.BATCH -> "Batch"
         DeliveryMode.INSTANT -> "Instant"
     }
+}
+
+/** Batch pauses a notification; instant lets it ring straight through. */
+private fun DeliveryMode.icon(): ImageVector = when (this) {
+    DeliveryMode.BATCH -> Icons.Filled.PauseCircle
+    DeliveryMode.INSTANT -> Icons.Filled.NotificationsActive
 }
 
 private fun retentionLabel(days: Int): String {
