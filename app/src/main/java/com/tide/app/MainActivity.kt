@@ -64,6 +64,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
@@ -285,6 +286,11 @@ class MainViewModel(
         SharingStarted.WhileSubscribed(5_000),
         false,
     )
+    val mediaNoticeDismissed: StateFlow<Boolean> = settings.mediaNoticeDismissed.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5_000),
+        true,
+    )
     val historyRetentionDays: StateFlow<Int> = settings.historyRetentionDays.stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5_000),
@@ -387,6 +393,10 @@ class MainViewModel(
 
     fun setShowSystemApps(enabled: Boolean) {
         viewModelScope.launch { settings.setShowSystemApps(enabled) }
+    }
+
+    fun dismissMediaNotice() {
+        viewModelScope.launch { settings.setMediaNoticeDismissed(true) }
     }
 
     fun setDynamicColorEnabled(enabled: Boolean) {
@@ -608,9 +618,12 @@ private fun TideRoot(
                     composable(Destination.Priority.route) {
                         val rules by viewModel.rulesUi.collectAsStateWithLifecycle()
                         val showSystemApps by viewModel.showSystemApps.collectAsStateWithLifecycle()
+                        val mediaNoticeDismissed by viewModel.mediaNoticeDismissed.collectAsStateWithLifecycle()
                         RulesScreen(
                             rules = rules,
                             showSystemApps = showSystemApps,
+                            showMediaNotice = !mediaNoticeDismissed,
+                            onDismissMediaNotice = viewModel::dismissMediaNotice,
                             onSetAppMode = viewModel::setAppMode,
                             onSetChannelMode = viewModel::setChannelMode,
                         )
@@ -1494,6 +1507,8 @@ private fun openOriginalNotification(context: Context, item: NotificationEntity)
 private fun RulesScreen(
     rules: List<AppRuleUi>,
     showSystemApps: Boolean,
+    showMediaNotice: Boolean,
+    onDismissMediaNotice: () -> Unit,
     onSetAppMode: (InstalledApp, DeliveryMode) -> Unit,
     onSetChannelMode: (ChannelRuleUi, DeliveryMode?) -> Unit,
 ) {
@@ -1521,6 +1536,9 @@ private fun RulesScreen(
                 )
             }
         }
+        if (showMediaNotice) {
+            item { MediaAppsNotice(onDismiss = onDismissMediaNotice) }
+        }
         item { SearchField(query, onQueryChange = { query = it }, placeholder = "Search apps and channels") }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
@@ -1534,6 +1552,61 @@ private fun RulesScreen(
         }
         items(visibleRules, key = { it.app.packageName }) { appRule ->
             AppRuleCard(appRule, onSetAppMode, onSetChannelMode)
+        }
+    }
+}
+
+/**
+ * A player's notification is what keeps its playback service alive, so batching one
+ * takes the controls away and can stop the audio. Media apps are already defaulted to
+ * instant (see `RECOMMENDED_INSTANT_HINTS`); this explains why, for anyone about to
+ * change one by hand. Dismissible, because it is only worth reading once.
+ */
+@Composable
+private fun MediaAppsNotice(
+    modifier: Modifier = Modifier,
+    onDismiss: (() -> Unit)? = null,
+) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        shape = MaterialTheme.shapes.medium,
+    ) {
+        Row(
+            modifier = Modifier.padding(start = MdSpacing.sm, top = MdSpacing.sm, bottom = MdSpacing.sm, end = MdSpacing.xs),
+            horizontalArrangement = Arrangement.spacedBy(MdSpacing.sm),
+            verticalAlignment = Alignment.Top,
+        ) {
+            Icon(
+                Icons.Filled.PlayCircle,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+            )
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(MdSpacing.xxs),
+            ) {
+                Text(
+                    "Music and video apps",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+                Text(
+                    "Batching a player takes away its playback controls and can stop the sound. " +
+                        "Tide leaves them on Instant, and it is best to keep it that way.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+            }
+            if (onDismiss != null) {
+                IconButton(onClick = onDismiss) {
+                    Icon(
+                        Icons.Filled.Close,
+                        contentDescription = "Dismiss",
+                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                    )
+                }
+            }
         }
     }
 }
@@ -2656,6 +2729,7 @@ private fun OnboardingAppsPage(nonSystemApps: List<InstalledApp>, selectedInstan
                 }
             }
         }
+        item { MediaAppsNotice(modifier = Modifier.padding(bottom = MdSpacing.xs)) }
         val recommended = nonSystemApps.filter { it.isRecommendedInstantApp }
         val rest = nonSystemApps.filter { !it.isRecommendedInstantApp }
         if (nonSystemApps.isEmpty()) {

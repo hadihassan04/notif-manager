@@ -50,6 +50,10 @@ class AppSettings(private val context: Context) {
         prefs[SETUP_DISMISSED_ONCE] ?: false
     }
 
+    val mediaNoticeDismissed: Flow<Boolean> = context.settingsDataStore.data.map { prefs ->
+        prefs[MEDIA_NOTICE_DISMISSED] ?: false
+    }
+
     val nonBatchableDefaultsNormalized: Flow<Boolean> = context.settingsDataStore.data.map { prefs ->
         prefs[NON_BATCHABLE_DEFAULTS_NORMALIZED] ?: false
     }
@@ -113,6 +117,12 @@ class AppSettings(private val context: Context) {
         }
     }
 
+    suspend fun setMediaNoticeDismissed(dismissed: Boolean) {
+        context.settingsDataStore.edit { prefs ->
+            prefs[MEDIA_NOTICE_DISMISSED] = dismissed
+        }
+    }
+
     suspend fun setNonBatchableDefaultsNormalized(normalized: Boolean) {
         context.settingsDataStore.edit { prefs ->
             prefs[NON_BATCHABLE_DEFAULTS_NORMALIZED] = normalized
@@ -131,6 +141,7 @@ class AppSettings(private val context: Context) {
         val PAUSE_BATCHING = booleanPreferencesKey("pause_batching")
         val TEMPORARY_OPEN_UNTIL_MILLIS = longPreferencesKey("temporary_open_until_millis")
         val SETUP_DISMISSED_ONCE = booleanPreferencesKey("setup_dismissed_once")
+        val MEDIA_NOTICE_DISMISSED = booleanPreferencesKey("media_notice_dismissed")
         val NON_BATCHABLE_DEFAULTS_NORMALIZED = booleanPreferencesKey("non_batchable_defaults_normalized")
         val MEDIA_PLAYER_DEFAULTS_NORMALIZED = booleanPreferencesKey("media_player_defaults_normalized")
     }
