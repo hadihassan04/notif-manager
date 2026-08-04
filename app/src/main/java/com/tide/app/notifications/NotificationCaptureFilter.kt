@@ -1,6 +1,7 @@
 package com.tide.app.notifications
 
 import android.app.Notification
+import android.app.NotificationManager
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.os.Build
@@ -56,12 +57,32 @@ object NotificationCaptureFilter {
         appProfile: CapturedAppProfile,
         title: String?,
         text: String?,
+        channelImportance: Int? = null,
     ): Boolean {
         if (sbn.notification.flags and Notification.FLAG_GROUP_SUMMARY != 0) return false
         if (title.isNullOrBlank() && text.isNullOrBlank()) return false
         if (isKnownNoise(sbn.packageName, title, text)) return false
+        if (channelImportance != null && channelImportance <= NotificationManager.IMPORTANCE_MIN) return false
+        if (isStatusNotification(sbn)) return false
         if (!appProfile.isSystemApp) return true
         return !isTransientSystemNotification(sbn, title, text)
+    }
+
+    /**
+     * Something the app is *doing*, not something that happened: a sync running, a
+     * download in flight, a player holding its controls open. These are never inbox
+     * items, and holding one back would cancel it — which for a foreground service
+     * means tearing down the work it represents.
+     */
+    private fun isStatusNotification(sbn: StatusBarNotification): Boolean {
+        val notification = sbn.notification
+        val flags = notification.flags
+        if (flags and Notification.FLAG_ONGOING_EVENT != 0) return true
+        if (flags and Notification.FLAG_FOREGROUND_SERVICE != 0) return true
+        if (!sbn.isClearable) return true
+        val extras = notification.extras
+        if (extras.getBoolean(Notification.EXTRA_PROGRESS_INDETERMINATE, false)) return true
+        return extras.getInt(Notification.EXTRA_PROGRESS_MAX, 0) > 0
     }
 
     private fun isTransientSystemNotification(
@@ -89,12 +110,6 @@ object NotificationCaptureFilter {
     internal fun isKnownNoise(packageName: String, title: String?, text: String?): Boolean {
         val content = listOfNotNull(title, text).joinToString(" ").lowercase()
         if (content.isBlank()) return false
-        if (
-            packageName.contains("whatsapp", ignoreCase = true) &&
-            (content.contains("checking for new messages") || content.contains("checking for messages"))
-        ) {
-            return true
-        }
         return PROGRESS_NOISE_REGEXES.any { it.containsMatchIn(content) } ||
             PERCENT_ONLY_REGEX.matches(content.trim()) ||
             DOWNLOADING_PERCENT_REGEX.containsMatchIn(content) ||
@@ -223,6 +238,14 @@ object NotificationCaptureFilter {
         Regex("""\bcopying\s+files?\b"""),
         Regex("""\bmoving\s+files?\b"""),
         Regex("""\bscanning\s+files?\b"""),
+        // Message apps that keep a socket open say so in a notification.
+        Regex("""\b(checking|waiting|listening)\s+for\s+(new\s+)?messages?\b"""),
+        Regex("""\bwaiting\s+for\s+(new\s+)?(mail|email|notifications?)\b"""),
+        // Media/file indexing sweeps.
+        Regex("""\bscanning\s+(for\s+)?(media|music|videos?|photos?|library)\b"""),
+        Regex("""\bmedia\s+scann?(er|ing)\b"""),
+        Regex("""\bindexing\s+(media|files?|library)\b"""),
+        Regex("""\bsync(ing)?\s+in\s+progress\b"""),
     )
 
     private val PERCENT_ONLY_REGEX = Regex("""^(progress\s*)?\d{1,3}\s?%$""")

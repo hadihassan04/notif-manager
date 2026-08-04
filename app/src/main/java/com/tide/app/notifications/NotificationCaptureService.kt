@@ -1,6 +1,7 @@
 package com.tide.app.notifications
 
 import android.app.Notification
+import android.app.NotificationChannel
 import android.os.Build
 import android.os.Process
 import android.os.UserHandle
@@ -35,7 +36,8 @@ class NotificationCaptureService : NotificationListenerService() {
         val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()
         val text = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()
         val appProfile = NotificationCaptureFilter.appProfile(packageManager, sbn.packageName)
-        if (!NotificationCaptureFilter.shouldStore(sbn, appProfile, title, text)) return
+        val channel = channelFor(sbn)
+        if (!NotificationCaptureFilter.shouldStore(sbn, appProfile, title, text, channel?.importance)) return
 
         PendingIntentRegistry.put(sbn.key, sbn.notification.contentIntent)
         val incoming = IncomingNotification(
@@ -45,7 +47,7 @@ class NotificationCaptureService : NotificationListenerService() {
             title = title,
             text = text,
             channelId = sbn.notification.channelId,
-            channelName = channelNameFor(sbn),
+            channelName = channel?.name?.toString()?.takeIf { it.isNotBlank() },
             category = sbn.notification.category,
             postedAtMillis = sbn.postTime,
             batchesByDefault = appProfile.batchesByDefault,
@@ -61,20 +63,23 @@ class NotificationCaptureService : NotificationListenerService() {
     }
 
     /**
-     * The user-visible channel name, which is what Android's own notification settings
-     * show. `Notification.channelId` is a developer string ("chat_messages_v2"), so it
-     * is only a fallback. The ranking already carries the channel for a notification
-     * that was just posted; querying the app's channels is the older path.
+     * The posting app's channel, which carries both the user-visible name shown in
+     * Android's notification settings and the importance the user gave it.
+     * `Notification.channelId` is a developer string ("chat_messages_v2"), so it is
+     * only a fallback for display. The ranking already holds the channel for a
+     * notification that was just posted; looking it up is the older path.
      */
-    private fun channelNameFor(sbn: StatusBarNotification): String? {
+    private fun channelFor(sbn: StatusBarNotification): NotificationChannel? {
         val channelId = sbn.notification.channelId ?: return null
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             val ranking = Ranking()
             if (currentRanking?.getRanking(sbn.key, ranking) == true) {
-                ranking.channel?.name?.toString()?.takeIf { it.isNotBlank() }?.let { return it }
+                ranking.channel?.let { return it }
             }
         }
-        return channelNames(sbn.packageName, sbn.user)[channelId]
+        return runCatching {
+            getNotificationChannels(sbn.packageName, sbn.user).firstOrNull { it.id == channelId }
+        }.getOrNull()
     }
 
     private fun channelNames(packageName: String, user: UserHandle): Map<String, String> {

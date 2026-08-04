@@ -21,13 +21,24 @@ class NotificationCaptureFilterTest {
     }
 
     @Test
-    fun ignoresWhatsappMessagePollingNoise() {
-        assertTrue(
-            NotificationCaptureFilter.isKnownNoise(
-                "com.whatsapp",
-                "WhatsApp",
-                "Checking for new messages",
-            ),
-        )
+    fun ignoresMessagePollingNoiseFromAnyApp() {
+        assertTrue(NotificationCaptureFilter.isKnownNoise("com.whatsapp", "WhatsApp", "Checking for new messages"))
+        assertTrue(NotificationCaptureFilter.isKnownNoise("com.signal", "Signal", "Waiting for messages"))
+        assertTrue(NotificationCaptureFilter.isKnownNoise("com.mail", "Mail", "Waiting for new email"))
+    }
+
+    @Test
+    fun ignoresLibraryScanNoise() {
+        assertTrue(NotificationCaptureFilter.isKnownNoise("com.player", "Scanning for media", null))
+        assertTrue(NotificationCaptureFilter.isKnownNoise("com.player", "Music", "Scanning music library"))
+        assertTrue(NotificationCaptureFilter.isKnownNoise("com.gallery", "Media scanner", "Working"))
+        assertTrue(NotificationCaptureFilter.isKnownNoise("com.drive", "Sync in progress", null))
+    }
+
+    @Test
+    fun keepsMessagesThatMerelyMentionScanningOrWaiting() {
+        assertFalse(NotificationCaptureFilter.isKnownNoise("com.chat", "Ana", "Waiting for you outside"))
+        assertFalse(NotificationCaptureFilter.isKnownNoise("com.chat", "Sam", "Can you scan the receipt?"))
+        assertFalse(NotificationCaptureFilter.isKnownNoise("com.chat", "Lee", "I am scanning for a new flat"))
     }
 }
