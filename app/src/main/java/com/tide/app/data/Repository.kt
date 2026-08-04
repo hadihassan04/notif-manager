@@ -115,7 +115,9 @@ class Repository(
                     ChannelRuleUi(
                         packageName = app.packageName,
                         channelId = channelId,
-                        channelName = rule?.channelName ?: summary.channelName,
+                        // Captures carry the channel's current user-visible name; a
+                        // rule only holds a copy from whenever it was saved.
+                        channelName = summary.channelName.ifBlank { rule?.channelName ?: channelId },
                         mode = rule?.deliveryMode,
                         notificationCount = summary.notificationCount,
                     )
@@ -152,6 +154,7 @@ class Repository(
             title = incoming.title,
             text = incoming.text,
             channelId = incoming.channelId,
+            channelName = incoming.channelName?.takeIf { it.isNotBlank() },
             category = incoming.category,
             postedAtMillis = incoming.postedAtMillis,
             batchId = decision?.batchId,
@@ -161,6 +164,15 @@ class Repository(
         dao.upsertNotification(entity)
         ensureAppRule(incoming.packageName, incoming.appLabel, incoming.batchesByDefault)
         return entity
+    }
+
+    suspend fun packagesMissingChannelNames(): List<String> = dao.packagesMissingChannelNames()
+
+    suspend fun nameChannels(packageName: String, namesByChannelId: Map<String, String>) {
+        namesByChannelId.forEach { (channelId, name) ->
+            dao.updateChannelName(packageName, channelId, name)
+            dao.updateChannelRuleName(packageName, channelId, name)
+        }
     }
 
     suspend fun setAppMode(packageName: String, appLabel: String, mode: DeliveryMode) {

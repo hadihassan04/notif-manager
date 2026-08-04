@@ -40,7 +40,7 @@ interface AppDao {
         SELECT
             n.packageName AS packageName,
             IFNULL(n.channelId, '') AS channelId,
-            IFNULL(n.channelId, '') AS channelName,
+            IFNULL(MAX(n.channelName), IFNULL(n.channelId, '')) AS channelName,
             COUNT(*) AS notificationCount
         FROM notifications AS n
         WHERE n.channelId IS NOT NULL
@@ -48,6 +48,15 @@ interface AppDao {
         """,
     )
     fun observeChannelSummaries(): Flow<List<NotificationChannelSummary>>
+
+    @Query("SELECT DISTINCT packageName FROM notifications WHERE channelId IS NOT NULL AND channelName IS NULL")
+    suspend fun packagesMissingChannelNames(): List<String>
+
+    @Query("UPDATE notifications SET channelName = :channelName WHERE packageName = :packageName AND channelId = :channelId")
+    suspend fun updateChannelName(packageName: String, channelId: String, channelName: String)
+
+    @Query("UPDATE channel_rules SET channelName = :channelName WHERE packageName = :packageName AND channelId = :channelId")
+    suspend fun updateChannelRuleName(packageName: String, channelId: String, channelName: String)
 
     @Query("SELECT * FROM notifications WHERE batchId = :batchId AND isArchived = 0 ORDER BY postedAtMillis DESC")
     suspend fun notificationsForBatch(batchId: String): List<NotificationEntity>

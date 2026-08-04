@@ -32,6 +32,10 @@ data class NotificationEntity(
     val title: String?,
     val text: String?,
     val channelId: String?,
+    // The channel's user-visible name, as shown in Android's own notification
+    // settings. Null until a capture resolves it: channel ids are developer strings
+    // like "chat_messages_v2" and are only a fallback for display.
+    val channelName: String? = null,
     val category: String?,
     val postedAtMillis: Long,
     val batchId: String?,
