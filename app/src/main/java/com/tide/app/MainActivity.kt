@@ -146,7 +146,9 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -196,6 +198,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.DateFormat
 import java.time.DayOfWeek
+import java.time.format.TextStyle
+import java.util.Locale
 import java.util.Date
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.cos
@@ -2221,26 +2225,45 @@ private fun WeekdaySelector(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        // Seven circles, one letter each: the whole week fits without scrolling, and
+        // the pattern of a schedule can be read at a glance.
         Row(
-            modifier = Modifier.horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs),
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(MdSpacing.xxs),
         ) {
             DayOfWeek.entries.forEach { day ->
                 val bit = 1 shl (day.value - 1)
                 val selected = activeDaysMask and bit != 0
-                FilterChip(
-                    selected = selected,
-                    onClick = {
-                        val newMask = if (selected) activeDaysMask and bit.inv() else activeDaysMask or bit
-                        onChanged(newMask)
-                    },
-                    label = { Text(day.name.take(3).lowercase().replaceFirstChar { it.uppercase() }) },
-                    leadingIcon = if (selected) {
-                        { Icon(Icons.Filled.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                val label = day.getDisplayName(TextStyle.NARROW, Locale.getDefault())
+                Surface(
+                    modifier = Modifier
+                        .weight(1f)
+                        .aspectRatio(1f)
+                        .clip(CircleShape)
+                        .clickable {
+                            val newMask = if (selected) activeDaysMask and bit.inv() else activeDaysMask or bit
+                            onChanged(newMask)
+                        }
+                        .semantics {
+                            this.selected = selected
+                            contentDescription = day.getDisplayName(TextStyle.FULL, Locale.getDefault())
+                        },
+                    shape = CircleShape,
+                    color = if (selected) {
+                        MaterialTheme.colorScheme.primary
                     } else {
-                        null
+                        MaterialTheme.colorScheme.surfaceContainerHighest
                     },
-                )
+                    contentColor = if (selected) {
+                        MaterialTheme.colorScheme.onPrimary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(label, style = MaterialTheme.typography.labelLarge)
+                    }
+                }
             }
         }
     }
