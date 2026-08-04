@@ -48,7 +48,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -60,6 +63,7 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Archive
@@ -2271,16 +2275,16 @@ private fun SettingsScreen(
         item {
             PermissionCard(
                 title = "Notification access",
-                body = "Required to hold and organize notifications from other apps.",
+                body = "So Tide can hold notifications and deliver them later.",
                 ready = permissions.listenerEnabled,
-                action = "Open settings",
+                action = "Allow",
                 onClick = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) },
             )
         }
         item {
             PermissionCard(
                 title = "Delivery notifications",
-                body = "Required so Tide can tell you when waiting notifications are released.",
+                body = "So Tide can tell you when a delivery arrives.",
                 ready = permissions.canPost,
                 action = "Allow",
                 onClick = {
@@ -2293,9 +2297,9 @@ private fun SettingsScreen(
         item {
             PermissionCard(
                 title = "Precise delivery",
-                body = "Delivers batches at the exact minute you chose.",
+                body = "So deliveries land at the minute you chose.",
                 ready = permissions.exactAlarmReady,
-                action = "Open settings",
+                action = "Allow",
                 onClick = {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                         context.startActivity(
@@ -2468,7 +2472,13 @@ private fun OnboardingScreen(
         else -> true
     }
 
-    Column(Modifier.fillMaxSize()) {
+    // Onboarding draws edge to edge with no scaffold of its own, so it has to keep
+    // itself clear of the notch and the gesture bar.
+    Column(
+        Modifier
+            .fillMaxSize()
+            .windowInsetsPadding(WindowInsets.safeDrawing),
+    ) {
         HorizontalPager(
             state = pagerState,
             modifier = Modifier.weight(1f),
@@ -2530,7 +2540,7 @@ private fun OnboardingScreen(
             if (!canContinue) {
                 Text(
                     if (pagerState.currentPage == 1) {
-                        "Allow the notification permissions above to continue."
+                        "Allow the permissions above to continue."
                     } else {
                         "Keep at least one delivery time enabled so waiting notifications have a safe release time."
                     },
@@ -2561,7 +2571,15 @@ private fun OnboardingScreen(
                     },
                     modifier = Modifier.weight(1f),
                     enabled = canContinue,
-                ) { Text(if (isLastPage) "Finish setup" else "Continue") }
+                ) {
+                    Text(if (isLastPage) "Finish setup" else "Continue")
+                    Spacer(Modifier.size(MdSpacing.xs))
+                    Icon(
+                        if (isLastPage) Icons.Filled.CheckCircle else Icons.AutoMirrored.Filled.ArrowForward,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
             }
             }
         }
@@ -2659,7 +2677,7 @@ private fun OnboardingPermissionsPage(
             Column(verticalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
                 Text("Required setup", style = MaterialTheme.typography.headlineMedium)
                 Text(
-                    "Tide needs these permissions to hold your notifications and deliver them on time.",
+                    "Three permissions, then you are set.",
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -2668,16 +2686,16 @@ private fun OnboardingPermissionsPage(
         item {
             PermissionCard(
                 title = "Notification access",
-                body = "Lets Tide hold and organize notifications from other apps.",
+                body = "So Tide can hold notifications and deliver them later.",
                 ready = permissions.listenerEnabled,
-                action = "Open settings",
+                action = "Allow",
                 onClick = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) },
             )
         }
         item {
             PermissionCard(
                 title = "Delivery notifications",
-                body = "Lets Tide tell you when waiting notifications are released.",
+                body = "So Tide can tell you when a delivery arrives.",
                 ready = permissions.canPost,
                 action = "Allow",
                 onClick = onRequestPostNotifications,
@@ -2686,9 +2704,9 @@ private fun OnboardingPermissionsPage(
         item {
             PermissionCard(
                 title = "Precise delivery",
-                body = "Lets Tide deliver batches at the exact minute you chose.",
+                body = "So deliveries land at the minute you chose.",
                 ready = permissions.exactAlarmReady,
-                action = "Open settings",
+                action = "Allow",
                 onClick = {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                         context.startActivity(
@@ -2822,25 +2840,26 @@ private fun PermissionCard(
             Column(Modifier.weight(1f)) {
                 Text(title, style = MaterialTheme.typography.titleMedium)
                 Text(body, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Spacer(Modifier.height(MdSpacing.xs))
-                Surface(
-                    color = if (ready) MaterialTheme.colorScheme.tertiaryContainer else MaterialTheme.colorScheme.errorContainer,
-                    contentColor = if (ready) MaterialTheme.colorScheme.onTertiaryContainer else MaterialTheme.colorScheme.onErrorContainer,
-                    shape = CircleShape,
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                        horizontalArrangement = Arrangement.spacedBy(MdSpacing.xxs),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        if (ready) {
-                            Icon(Icons.Filled.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp))
-                        }
-                        Text(if (ready) "Allowed" else "Not allowed", style = MaterialTheme.typography.labelMedium)
-                    }
-                }
             }
-            if (!ready) {
+            // One control, and it only ever has two things to say: ask, or confirm.
+            if (ready) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(MdSpacing.xxs),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        Icons.Filled.CheckCircle,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.tertiary,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Text(
+                        "Allowed",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.tertiary,
+                    )
+                }
+            } else {
                 Button(onClick = onClick) { Text(action) }
             }
         }
