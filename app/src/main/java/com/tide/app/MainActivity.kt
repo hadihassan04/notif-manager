@@ -450,7 +450,8 @@ class MainViewModel(
 private enum class Destination(val route: String, val label: String, val icon: ImageVector) {
     Inbox("inbox", "Inbox", Icons.Filled.Inbox),
     Schedule("schedule", "Schedule", Icons.Filled.Schedule),
-    Priority("priority", "Priority", Icons.Filled.Tune),
+    // The route is the persisted nav key, so it keeps its original name.
+    Priority("priority", "Apps", Icons.Filled.Tune),
     Settings("settings", "Settings", Icons.Filled.Settings),
 }
 
@@ -710,7 +711,7 @@ private fun TideRoot(
                     )
                     AddScheduleChoice(
                         title = "Open hours",
-                        body = "Release the queue and allow routine interruptions.",
+                        body = "Deliver what is waiting and let batched apps through for a while.",
                         icon = Icons.Filled.NotificationsActive,
                         onClick = {
                             viewModel.addInstantWindow()
@@ -1514,7 +1515,7 @@ private fun RulesScreen(
             Column(verticalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
                 Text("Choose what can interrupt you", style = MaterialTheme.typography.headlineSmall)
                 Text(
-                    "Priority apps arrive immediately. Routine apps wait for a delivery time unless Open hours are active.",
+                    "Instant apps reach you the moment they arrive. Batch apps wait for the next delivery time, unless Open hours are on.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1524,8 +1525,8 @@ private fun RulesScreen(
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
                 FilterChip(selected = modeFilter == null, onClick = { modeFilter = null }, label = { Text("All") })
-                FilterChip(selected = modeFilter == DeliveryMode.INSTANT, onClick = { modeFilter = DeliveryMode.INSTANT }, label = { Text("Priority") })
-                FilterChip(selected = modeFilter == DeliveryMode.BATCH, onClick = { modeFilter = DeliveryMode.BATCH }, label = { Text("Routine") })
+                FilterChip(selected = modeFilter == DeliveryMode.INSTANT, onClick = { modeFilter = DeliveryMode.INSTANT }, label = { Text("Instant") })
+                FilterChip(selected = modeFilter == DeliveryMode.BATCH, onClick = { modeFilter = DeliveryMode.BATCH }, label = { Text("Batch") })
             }
         }
         if (visibleRules.isEmpty()) {
@@ -1779,8 +1780,8 @@ private fun DeliveryModeSelector(value: DeliveryMode, onValue: (DeliveryMode) ->
             .horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs),
     ) {
-        FilterChip(selected = value == DeliveryMode.BATCH, onClick = { onValue(DeliveryMode.BATCH) }, label = { Text("Routine") })
-        FilterChip(selected = value == DeliveryMode.INSTANT, onClick = { onValue(DeliveryMode.INSTANT) }, label = { Text("Priority") })
+        FilterChip(selected = value == DeliveryMode.BATCH, onClick = { onValue(DeliveryMode.BATCH) }, label = { Text("Batch") })
+        FilterChip(selected = value == DeliveryMode.INSTANT, onClick = { onValue(DeliveryMode.INSTANT) }, label = { Text("Instant") })
     }
 }
 
@@ -1793,8 +1794,8 @@ private fun ChannelModeMenu(value: DeliveryMode?, onValue: (DeliveryMode?) -> Un
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             DropdownMenuItem(text = { Text("Uses app setting") }, onClick = { onValue(null); expanded = false })
-            DropdownMenuItem(text = { Text("Routine") }, onClick = { onValue(DeliveryMode.BATCH); expanded = false })
-            DropdownMenuItem(text = { Text("Priority") }, onClick = { onValue(DeliveryMode.INSTANT); expanded = false })
+            DropdownMenuItem(text = { Text("Batch") }, onClick = { onValue(DeliveryMode.BATCH); expanded = false })
+            DropdownMenuItem(text = { Text("Instant") }, onClick = { onValue(DeliveryMode.INSTANT); expanded = false })
         }
     }
 }
@@ -1942,7 +1943,7 @@ private fun ScheduleScreen(
             item {
                 EmptyState(
                     "Add a delivery time",
-                    "Routine notifications need at least one safe release time. Tap + to add one.",
+                    "Batched notifications need somewhere to land. Tap + to add a delivery time.",
                 )
             }
         }
@@ -1955,7 +1956,7 @@ private fun ScheduleScreen(
         if (instantWindows.isEmpty()) {
             item {
                 Text(
-                    "No Open hours. Routine notifications wait for delivery times all day.",
+                    "No Open hours yet, so batched notifications wait for a delivery time all day.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1994,8 +1995,8 @@ private fun ScheduleStatusCard(
             Text(if (isOpen) "Open now" else "Waiting now", style = MaterialTheme.typography.headlineSmall)
             Text(
                 when {
-                    isOpen && temporaryOpen -> "Routine notifications can interrupt you until ${formatTime(temporaryOpenUntilMillis)}."
-                    isOpen -> "Routine notifications can interrupt you during scheduled Open hours."
+                    isOpen && temporaryOpen -> "Batched notifications can reach you until ${formatTime(temporaryOpenUntilMillis)}."
+                    isOpen -> "Batched notifications can reach you while Open hours are on."
                     nextDeliveryMillis != null -> "Next delivery ${formatDateTime(nextDeliveryMillis)} · $waitingCount waiting"
                     else -> "$waitingCount waiting · add a delivery time to release them safely"
                 },
@@ -2228,7 +2229,7 @@ private fun SettingsScreen(
             )
         }
         item { SettingsSectionLabel("Notification management") }
-        item { SwitchRow("Show system apps", "Include system apps in Priority.", showSystemApps, onShowSystemApps) }
+        item { SwitchRow("Show system apps", "List system apps alongside the rest.", showSystemApps, onShowSystemApps) }
         item {
             RetentionCard(retentionDays = retentionDays, onRetentionDays = onRetentionDays, onCleanupNow = onCleanupNow)
         }
@@ -2542,7 +2543,7 @@ private fun OnboardingWelcomePage() {
                 textAlign = TextAlign.Center,
             )
             Text(
-                "Routine notifications wait for times you choose. Priority apps can still reach you immediately.",
+                "Batched notifications wait for times you choose. Instant apps still reach you right away.",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
@@ -2623,13 +2624,13 @@ private fun OnboardingAppsPage(nonSystemApps: List<InstalledApp>, selectedInstan
             ) {
                 Text("What should always reach you?", style = MaterialTheme.typography.headlineMedium)
                 Text(
-                    "Priority apps arrive immediately. Routine apps wait for your delivery schedule unless Open hours are active.",
+                    "Instant apps reach you the moment they arrive. Everything else is batched until your next delivery time.",
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 if (instantCount > 0) {
                     Text(
-                        "$instantCount priority app${if (instantCount == 1) "" else "s"}",
+                        "$instantCount instant app${if (instantCount == 1) "" else "s"}",
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.primary,
                     )
@@ -2641,7 +2642,7 @@ private fun OnboardingAppsPage(nonSystemApps: List<InstalledApp>, selectedInstan
         if (nonSystemApps.isEmpty()) {
             item {
                 Text(
-                    "No apps are available yet. You can choose priority apps later.",
+                    "No apps are available yet. You can pick instant apps later.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -2698,7 +2699,7 @@ private fun OnboardingAppRow(app: InstalledApp, selectedInstantPackages: Mutable
             Column(Modifier.weight(1f)) {
                 Text(app.label, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
-                    if (selected) "Priority · always immediate" else "Routine · waits for delivery",
+                    if (selected) "Instant · always gets through" else "Batch · waits for delivery",
                     style = MaterialTheme.typography.labelSmall,
                     color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -3095,8 +3096,8 @@ private fun NotificationEntity.groupKey(): String {
 
 private fun DeliveryMode.label(): String {
     return when (this) {
-        DeliveryMode.BATCH -> "Routine"
-        DeliveryMode.INSTANT -> "Priority"
+        DeliveryMode.BATCH -> "Batch"
+        DeliveryMode.INSTANT -> "Instant"
     }
 }
 
