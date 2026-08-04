@@ -24,6 +24,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -31,6 +32,9 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -99,14 +103,11 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
-import androidx.compose.material3.SwipeToDismissBox
-import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TimePicker
 import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -115,6 +116,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -128,12 +130,14 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.CustomAccessibilityAction
@@ -977,11 +981,11 @@ private fun NotificationsScreen(
         items(historyGroups, key = { "history_${it.rowKey}" }) { group ->
             NotificationRow(
                 modifier = Modifier.animateItem(
-                    fadeInSpec = spring(stiffness = Spring.StiffnessMediumLow),
-                    fadeOutSpec = spring(stiffness = Spring.StiffnessMediumLow),
+                    fadeInSpec = spring(stiffness = Spring.StiffnessLow),
+                    fadeOutSpec = spring(stiffness = Spring.StiffnessLow),
                     placementSpec = spring(
                         dampingRatio = Spring.DampingRatioNoBouncy,
-                        stiffness = Spring.StiffnessMediumLow,
+                        stiffness = Spring.StiffnessLow,
                     ),
                 ),
                 group = group,
@@ -1011,11 +1015,11 @@ private fun NotificationsScreen(
             items(archivedGroups, key = { "archived_${it.rowKey}" }) { group ->
                 NotificationRow(
                     modifier = Modifier.animateItem(
-                        fadeInSpec = spring(stiffness = Spring.StiffnessMediumLow),
-                        fadeOutSpec = spring(stiffness = Spring.StiffnessMediumLow),
+                        fadeInSpec = spring(stiffness = Spring.StiffnessLow),
+                        fadeOutSpec = spring(stiffness = Spring.StiffnessLow),
                         placementSpec = spring(
                             dampingRatio = Spring.DampingRatioNoBouncy,
-                            stiffness = Spring.StiffnessMediumLow,
+                            stiffness = Spring.StiffnessLow,
                         ),
                     ),
                     group = group,
@@ -1262,56 +1266,152 @@ private fun NotificationRowContent(
     archiveLabel: String,
     onArchive: () -> Unit,
 ) {
-    val context = LocalContext.current
-    val hapticFeedback = LocalHapticFeedback.current
-    val item = group.primary
     val swipeEnabled = archiveLabel != "Restore"
-    val dismissState = rememberSwipeToDismissBoxState(
-        positionalThreshold = { distance -> distance * 0.38f },
-        confirmValueChange = { value ->
-            if (value != SwipeToDismissBoxValue.Settled && swipeEnabled) {
-                hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
-                onArchive()
-                true
-            } else {
-                false
-            }
-        },
-    )
-    SwipeToDismissBox(
-        state = dismissState,
-        modifier = modifier.fillMaxWidth(),
-        enableDismissFromStartToEnd = swipeEnabled,
-        enableDismissFromEndToStart = false,
-        backgroundContent = {
-            val alignment = when (dismissState.dismissDirection) {
-                SwipeToDismissBoxValue.StartToEnd -> Alignment.CenterStart
-                SwipeToDismissBoxValue.EndToStart -> Alignment.CenterEnd
-                SwipeToDismissBoxValue.Settled -> Alignment.CenterEnd
-            }
-            val backgroundColor = if (swipeEnabled) {
-                MaterialTheme.colorScheme.tertiaryContainer
-            } else {
-                Color.Transparent
-            }
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .clip(MaterialTheme.shapes.medium)
-                    .background(backgroundColor)
-                    .padding(horizontal = MdSpacing.sm),
-                contentAlignment = alignment,
-            ) {
-                if (swipeEnabled) {
-                    Icon(
-                        Icons.Filled.Archive,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onTertiaryContainer,
-                    )
-                }
-            }
-        },
+    if (swipeEnabled) {
+        SwipeToArchive(modifier = modifier, onArchive = onArchive) {
+            NotificationCard(
+                modifier = Modifier,
+                group = group,
+                archiveLabel = archiveLabel,
+                swipeEnabled = true,
+                onArchive = onArchive,
+            )
+        }
+    } else {
+        NotificationCard(
+            modifier = modifier,
+            group = group,
+            archiveLabel = archiveLabel,
+            swipeEnabled = false,
+            onArchive = onArchive,
+        )
+    }
+}
+
+/** How far a row must travel, as a fraction of its width, before the release archives it. */
+private const val SwipeArchiveThreshold = 0.32f
+
+/** A fling past this speed (px/s) archives even from a short drag. */
+private const val SwipeArchiveVelocity = 1200f
+
+/** Release below the threshold: a soft glide home that keeps a trace of the fling. */
+private val SwipeReturnSpec = spring<Float>(dampingRatio = 0.8f, stiffness = 200f)
+
+/** Release past the threshold: the row keeps moving out rather than snapping away. */
+private val SwipeExitSpec = spring<Float>(dampingRatio = 1f, stiffness = 160f)
+
+/**
+ * Swipe-to-archive with a hand-tuned settle.
+ *
+ * `SwipeToDismissBox` keeps its animation spec internal, and its default spring throws
+ * the row off screen faster than anything else in the app moves. It also archives the
+ * moment the threshold is crossed, so the row vanishes mid-gesture instead of finishing
+ * it. Driving the gesture here gives a continuous motion: the row gains weight as it
+ * travels, the release carries the finger's velocity into a slow spring, and the list is
+ * only told to archive once the row has cleared the edge and faded.
+ */
+@Composable
+private fun SwipeToArchive(
+    modifier: Modifier = Modifier,
+    onArchive: () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    val hapticFeedback = LocalHapticFeedback.current
+    val scope = rememberCoroutineScope()
+    val offsetX = remember { Animatable(0f) }
+    var width by remember { mutableFloatStateOf(0f) }
+    var dragTarget by remember { mutableFloatStateOf(0f) }
+    var archiving by remember { mutableStateOf(false) }
+    var pastThreshold by remember { mutableStateOf(false) }
+
+    val progress = if (width > 0f) (offsetX.value / width).coerceIn(0f, 1f) else 0f
+    // On the way out the row dissolves as it clears the edge, so the gap it leaves
+    // starts collapsing while it is still moving. Dragging never fades: only a release
+    // that commits to the archive does.
+    val exitFade = if (archiving) 1f - ((progress - 0.7f) / 0.25f).coerceIn(0f, 1f) else 1f
+
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .onSizeChanged { width = it.width.toFloat() }
+            .graphicsLayer { alpha = exitFade }
+            .draggable(
+                orientation = Orientation.Horizontal,
+                enabled = !archiving,
+                state = rememberDraggableState { delta ->
+                    // Resistance builds with distance, so the row eases into the
+                    // threshold instead of shooting past it.
+                    val resistance = 1f - 0.45f * progress
+                    dragTarget = (dragTarget + delta * resistance).coerceIn(0f, width)
+                    val crossed = width > 0f && dragTarget / width >= SwipeArchiveThreshold
+                    if (crossed != pastThreshold) {
+                        pastThreshold = crossed
+                        hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    }
+                    scope.launch { offsetX.snapTo(dragTarget) }
+                },
+                onDragStarted = { dragTarget = offsetX.value },
+                onDragStopped = { velocity ->
+                    val flung = velocity > SwipeArchiveVelocity && progress > 0.1f
+                    if (width > 0f && (progress >= SwipeArchiveThreshold || flung)) {
+                        archiving = true
+                        hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                        // Hand the row back to the list once it has faded out, rather
+                        // than waiting for the spring's long tail to settle.
+                        var handedOff = false
+                        offsetX.animateTo(width, SwipeExitSpec, initialVelocity = velocity) {
+                            if (!handedOff && value >= width * 0.95f) {
+                                handedOff = true
+                                onArchive()
+                            }
+                        }
+                        if (!handedOff) onArchive()
+                    } else {
+                        pastThreshold = false
+                        offsetX.animateTo(0f, SwipeReturnSpec, initialVelocity = velocity)
+                    }
+                },
+            ),
     ) {
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .clip(MaterialTheme.shapes.medium)
+                .background(MaterialTheme.colorScheme.tertiaryContainer)
+                .padding(horizontal = MdSpacing.sm),
+            contentAlignment = Alignment.CenterStart,
+        ) {
+            Icon(
+                Icons.Filled.Archive,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                modifier = Modifier.graphicsLayer {
+                    // The icon arrives with the gesture and is fully there at the
+                    // point of no return.
+                    val reveal = (progress / SwipeArchiveThreshold).coerceIn(0f, 1f)
+                    alpha = reveal
+                    scaleX = 0.8f + 0.2f * reveal
+                    scaleY = 0.8f + 0.2f * reveal
+                },
+            )
+        }
+        Box(modifier = Modifier.graphicsLayer { translationX = offsetX.value }) {
+            content()
+        }
+    }
+}
+
+@Composable
+private fun NotificationCard(
+    modifier: Modifier,
+    group: NotificationGroup,
+    archiveLabel: String,
+    swipeEnabled: Boolean,
+    onArchive: () -> Unit,
+) {
+    val context = LocalContext.current
+    val item = group.primary
+    Box(modifier = modifier) {
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
