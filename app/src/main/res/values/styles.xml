@@ -6,6 +6,14 @@
         <item name="android:fontFamily">sans</item>
     </style>
 
+    <style name="Theme.Tide.Trampoline" parent="android:style/Theme.Translucent.NoTitleBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowDisablePreview">true</item>
+        <item name="android:backgroundDimEnabled">false</item>
+    </style>
+
     <style name="Theme.Tide.Splash" parent="Theme.SplashScreen">
         <item name="windowSplashScreenBackground">@color/tide_splash_background</item>
         <item name="windowSplashScreenAnimatedIcon">@drawable/ic_splash_wave</item>

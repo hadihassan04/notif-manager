@@ -34,12 +34,12 @@ class ReleasedNotificationPlanTest {
     }
 
     @Test
-    fun missingPendingIntentFallsBackToOpeningTheAppAndSaysSo() {
+    fun missingPendingIntentUsesActivityTrampolineAndSaysSo() {
         val item = item("wa-sng", "com.whatsapp", "WhatsApp", "SnG: Ahmar Jamal", "Also gpt coming today finally")
 
         val spec = ReleasedNotificationPlan.specs(listOf(item)) { false }.single()
 
-        assertEquals(ReleasedTap.OPEN_APP, spec.tap)
+        assertEquals(ReleasedTap.TRAMPOLINE, spec.tap)
         assertEquals("SnG: Ahmar Jamal", spec.title)
         assertTrue(spec.text.orEmpty().contains("Also gpt coming today finally"))
         assertTrue(spec.text.orEmpty().contains("Original tap expired. Opens WhatsApp."))

@@ -39,7 +39,7 @@ class NotificationCaptureService : NotificationListenerService() {
         val channel = channelFor(sbn)
         if (!NotificationCaptureFilter.shouldStore(sbn, appProfile, title, text, channel?.importance)) return
 
-        PendingIntentRegistry.put(sbn.key, sbn.notification.contentIntent)
+        PendingIntentRegistry.put(sbn.key, CapturedContentIntents.from(sbn.notification))
         val incoming = IncomingNotification(
             notificationKey = sbn.key,
             packageName = sbn.packageName,
