@@ -18,6 +18,9 @@ object PendingIntentRegistry {
     }
 
     @Synchronized
+    fun contains(notificationKey: String): Boolean = intents.containsKey(notificationKey)
+
+    @Synchronized
     fun send(notificationKey: String): Boolean {
         val pendingIntent = intents[notificationKey] ?: return false
         return runCatching {

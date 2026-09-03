@@ -7,16 +7,19 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.net.Uri
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
-import com.tide.app.MainActivity
+import androidx.core.net.toUri
 import com.tide.app.R
 import com.tide.app.data.NotificationEntity
 
 class NotificationPublisher(private val context: Context) {
-    fun showDigest(batchId: String, notifications: List<NotificationEntity>) {
+    fun release(notifications: List<NotificationEntity>) {
         ensureChannel()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -24,43 +27,63 @@ class NotificationPublisher(private val context: Context) {
             return
         }
         if (notifications.isEmpty()) return
+        val specs = ReleasedNotificationPlan.specs(notifications, PendingIntentRegistry::contains)
+        specs.forEachIndexed { index, spec -> post(spec, alert = index == 0) }
+    }
 
-        val topApps = notifications
-            .groupingBy { it.appLabel }
-            .eachCount()
-            .entries
-            .sortedByDescending { it.value }
-            .take(3)
-            .joinToString { it.key }
+    private fun post(spec: ReleasedNotificationSpec, alert: Boolean) {
+        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_stat_tide)
+            .setContentTitle(spec.title)
+            .setContentText(spec.text)
+            .setSubText(spec.appLabel)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(spec.text))
+            .setContentIntent(pendingIntent(spec, ReleasedNotificationReceiver.ACTION_OPEN))
+            .setDeleteIntent(pendingIntent(spec, ReleasedNotificationReceiver.ACTION_DISMISS))
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setSilent(!alert)
+            .apply {
+                largeIcon(spec.packageName)?.let(::setLargeIcon)
+            }
+            .build()
+        NotificationManagerCompat.from(context).notify(RELEASED_TAG, shadeId(spec.notificationKey), notification)
+    }
 
-        val intent = Intent(context, MainActivity::class.java).apply {
-            putExtra(MainActivity.EXTRA_BATCH_ID, batchId)
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+    private fun pendingIntent(spec: ReleasedNotificationSpec, action: String): PendingIntent {
+        val intent = Intent(context, ReleasedNotificationReceiver::class.java).apply {
+            this.action = action
+            data = "tide://released/${action.substringAfterLast('.')}/${Uri.encode(spec.notificationKey)}".toUri()
+            putExtra(ReleasedNotificationReceiver.EXTRA_NOTIFICATION_KEY, spec.notificationKey)
+            putExtra(ReleasedNotificationReceiver.EXTRA_PACKAGE_NAME, spec.packageName)
+            putExtra(ReleasedNotificationReceiver.EXTRA_APP_LABEL, spec.appLabel)
         }
-        val pendingIntent = PendingIntent.getActivity(
+        val requestCode = shadeId(spec.notificationKey.xorHash(action))
+        return PendingIntent.getBroadcast(
             context,
-            batchId.hashCode(),
+            requestCode,
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
+    }
 
-        val notification = NotificationCompat.Builder(context, DIGEST_CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_stat_tide)
-            .setContentTitle("Waiting notifications delivered")
-            .setContentText("${notifications.size} notifications from $topApps")
-            .setStyle(NotificationCompat.BigTextStyle().bigText("${notifications.size} notifications were released. Top apps: $topApps."))
-            .setContentIntent(pendingIntent)
-            .setAutoCancel(true)
-            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-            .build()
-
-        NotificationManagerCompat.from(context).notify(batchId.hashCode(), notification)
+    private fun largeIcon(packageName: String): Bitmap? {
+        return runCatching {
+            val drawable = context.packageManager.getApplicationIcon(packageName)
+            val size = (48 * context.resources.displayMetrics.density).toInt().coerceAtLeast(48)
+            val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bitmap)
+            drawable.setBounds(0, 0, size, size)
+            drawable.draw(canvas)
+            bitmap
+        }.getOrNull()
     }
 
     private fun ensureChannel() {
         val manager = context.getSystemService(NotificationManager::class.java)
         val channel = NotificationChannel(
-            DIGEST_CHANNEL_ID,
+            CHANNEL_ID,
             context.getString(R.string.digest_channel_name),
             NotificationManager.IMPORTANCE_DEFAULT,
         ).apply {
@@ -70,6 +93,15 @@ class NotificationPublisher(private val context: Context) {
     }
 
     companion object {
-        const val DIGEST_CHANNEL_ID = "batch_digests"
+        const val CHANNEL_ID = "batch_digests"
+        const val RELEASED_TAG = "released"
+
+        fun shadeId(notificationKey: String): Int = notificationKey.hashCode()
+
+        fun cancel(context: Context, notificationKey: String) {
+            NotificationManagerCompat.from(context).cancel(RELEASED_TAG, shadeId(notificationKey))
+        }
     }
 }
+
+private fun String.xorHash(other: String): String = "$this\n$other"
