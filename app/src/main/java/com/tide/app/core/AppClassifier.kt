@@ -29,9 +29,6 @@ enum class AppRole {
             GAME, SOCIAL, SHOPPING, OTHER -> false
         }
 
-    val lockedInstant: Boolean
-        get() = this == MEDIA
-
     val selectionGroup: AppSelectionGroup
         get() = when (this) {
             MEDIA -> AppSelectionGroup.ALWAYS_INSTANT
@@ -42,6 +39,7 @@ enum class AppRole {
 
 enum class AppSelectionGroup {
     ALWAYS_INSTANT,
+    INSTANT,
     TIME_SENSITIVE,
     EVERYTHING_ELSE,
     ;
@@ -49,6 +47,7 @@ enum class AppSelectionGroup {
     val title: String
         get() = when (this) {
             ALWAYS_INSTANT -> "Always instant"
+            INSTANT -> "Instant"
             TIME_SENSITIVE -> "Recommended"
             EVERYTHING_ELSE -> "Everything else"
         }
@@ -57,11 +56,25 @@ enum class AppSelectionGroup {
         get() = when (this) {
             ALWAYS_INSTANT ->
                 "Music and video players, which stop playing if their notification is held."
+            INSTANT -> ""
             TIME_SENSITIVE ->
                 "Calls, messages, email, banks, deliveries, calendars and sign-in codes."
             EVERYTHING_ELSE ->
                 "Social, games, shopping and the rest. These wait for a delivery time."
         }
+}
+
+/**
+ * Live picker buckets. Recommended is only time-sensitive apps that are not
+ * Instant yet. Media stays under Always instant even after the user turns it off.
+ */
+fun pickerSelectionGroup(role: AppRole, instant: Boolean): AppSelectionGroup {
+    return when {
+        role == AppRole.MEDIA -> AppSelectionGroup.ALWAYS_INSTANT
+        instant -> AppSelectionGroup.INSTANT
+        role.defaultsToInstant -> AppSelectionGroup.TIME_SENSITIVE
+        else -> AppSelectionGroup.EVERYTHING_ELSE
+    }
 }
 
 data class AppSignals(

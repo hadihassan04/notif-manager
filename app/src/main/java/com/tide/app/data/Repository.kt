@@ -10,6 +10,7 @@ import com.tide.app.core.AppClassifier
 import com.tide.app.core.AppRole
 import com.tide.app.core.AppSelectionGroup
 import com.tide.app.core.AppSignals
+import com.tide.app.core.InboxLayout
 import com.tide.app.core.IncomingNotification
 import com.tide.app.core.Insights
 import com.tide.app.core.InsightsCalculator
@@ -218,24 +219,21 @@ class Repository(
     }
 
     /**
-     * Bulk mode change from the app list. Players are skipped when the target is batch:
-     * cancelling a playback notification would stop the audio, so that one move is not
-     * theirs to make.
+     * Bulk mode change from the app list. Media apps can be turned off Instant;
+     * playback notifications still skip the hold via the capture filter.
      */
     suspend fun setAppModes(apps: List<InstalledApp>, mode: DeliveryMode) {
         val now = System.currentTimeMillis()
-        apps
-            .filter { mode == DeliveryMode.INSTANT || !it.isMediaPlayer }
-            .forEach { app ->
-                dao.upsertAppRule(
-                    AppRuleEntity(
-                        packageName = app.packageName,
-                        appLabel = app.label,
-                        deliveryMode = mode,
-                        updatedAtMillis = now,
-                    ),
-                )
-            }
+        apps.forEach { app ->
+            dao.upsertAppRule(
+                AppRuleEntity(
+                    packageName = app.packageName,
+                    appLabel = app.label,
+                    deliveryMode = mode,
+                    updatedAtMillis = now,
+                ),
+            )
+        }
     }
 
     suspend fun bulkSetInstant(apps: List<InstalledApp>) {
@@ -258,9 +256,7 @@ class Repository(
                 AppRuleEntity(
                     packageName = app.packageName,
                     appLabel = app.label,
-                    // Batching a player would cancel its playback controls, so the
-                    // selection cannot turn one off.
-                    deliveryMode = if (app.packageName in priorityPackages || app.isMediaPlayer) {
+                    deliveryMode = if (app.packageName in priorityPackages) {
                         DeliveryMode.INSTANT
                     } else {
                         DeliveryMode.BATCH
@@ -356,12 +352,12 @@ class Repository(
     }
 
     suspend fun archiveBatch(batchId: String) {
-        val keys = if (batchId == UNBATCHED_BATCH_ID) {
+        val keys = if (batchId == InboxLayout.UNBATCHED_BATCH_ID) {
             dao.notificationsForUnbatchedBatch().map { it.notificationKey }
         } else {
             dao.notificationsForBatch(batchId).map { it.notificationKey }
         }
-        if (batchId == UNBATCHED_BATCH_ID) {
+        if (batchId == InboxLayout.UNBATCHED_BATCH_ID) {
             dao.archiveUnbatchedBatch()
         } else {
             dao.archiveBatch(batchId)
@@ -370,7 +366,7 @@ class Repository(
     }
 
     suspend fun unarchiveBatch(batchId: String) {
-        if (batchId == UNBATCHED_BATCH_ID) {
+        if (batchId == InboxLayout.UNBATCHED_BATCH_ID) {
             dao.unarchiveUnbatchedBatch()
         } else {
             dao.unarchiveBatch(batchId)
@@ -439,6 +435,19 @@ class Repository(
         }
         if (waiting.isEmpty()) return 0
         val releaseBatchId = openReleaseBatchId(nowMillis)
+        dao.moveNotificationsToBatch(waiting.map { it.notificationKey }, releaseBatchId)
+        NotificationPublisher(context).showDigest(releaseBatchId, waiting)
+        return waiting.size
+    }
+
+    suspend fun deliverNotificationsNow(keys: List<String>): Int {
+        if (keys.isEmpty()) return 0
+        val now = System.currentTimeMillis()
+        val waiting = keys.mapNotNull { dao.notificationByKey(it) }.filter { notification ->
+            !notification.isArchived && notification.deliveryMode == DeliveryMode.BATCH
+        }
+        if (waiting.isEmpty()) return 0
+        val releaseBatchId = openReleaseBatchId(now)
         dao.moveNotificationsToBatch(waiting.map { it.notificationKey }, releaseBatchId)
         NotificationPublisher(context).showDigest(releaseBatchId, waiting)
         return waiting.size
@@ -630,7 +639,7 @@ class Repository(
     ): List<InboxBatch> {
         return notifications
             .filter { it.deliveryMode == DeliveryMode.BATCH }
-            .groupBy { it.batchId ?: UNBATCHED_BATCH_ID }
+            .groupBy { it.batchId ?: InboxLayout.UNBATCHED_BATCH_ID }
             .map { (batchId, items) -> buildBatch(batchId, items) }
             .sortedByDescending { it.newestAtMillis }
     }
@@ -653,7 +662,7 @@ class Repository(
         return InboxBatch(
             batchId = batchId,
             title = when {
-                batchId == UNBATCHED_BATCH_ID -> "Unbatched"
+                batchId == InboxLayout.UNBATCHED_BATCH_ID -> "Unbatched"
                 releaseMinutes != null -> "${formatMinutes(releaseMinutes)} delivery"
                 else -> "Delivery"
             },
@@ -699,7 +708,7 @@ class Repository(
     }
 
     private fun batchReleaseAtMillis(batchId: String): Long {
-        if (batchId == UNBATCHED_BATCH_ID) return 0L
+        if (batchId == InboxLayout.UNBATCHED_BATCH_ID) return 0L
         val date = runCatching { LocalDate.parse(batchId.substringBefore("-batch-")) }.getOrNull() ?: return 0L
         val releaseMinutes = batchId.substringAfterLast("-", missingDelimiterValue = "").toIntOrNull() ?: return 0L
         if (releaseMinutes !in 0 until 24 * 60) return 0L
@@ -717,7 +726,6 @@ class Repository(
     }
 
     companion object {
-        const val UNBATCHED_BATCH_ID = "unbatched"
         private const val RECENT_HISTORY_LIMIT = 600
     }
 }

@@ -62,7 +62,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
@@ -151,6 +150,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.tide.app.core.InboxLayout
 import com.tide.app.core.ManualOpen
 import com.tide.app.core.OpenHoursCalculator
 import com.tide.app.core.ScheduleCalculator
@@ -171,6 +171,7 @@ import com.tide.app.ui.AppSelectionPane
 import com.tide.app.ui.TideActionCard
 import com.tide.app.ui.TideHeroCard
 import com.tide.app.ui.TideMetricCard
+import com.tide.app.ui.TideTopSlot
 import com.tide.app.ui.TideWaves
 import com.tide.app.ui.theme.MdSpacing
 import com.tide.app.ui.theme.TideTheme
@@ -267,11 +268,6 @@ class MainViewModel(
         viewModelScope,
         SharingStarted.WhileSubscribed(5_000),
         false,
-    )
-    val mediaNoticeDismissed: StateFlow<Boolean> = settings.mediaNoticeDismissed.stateIn(
-        viewModelScope,
-        SharingStarted.WhileSubscribed(5_000),
-        true,
     )
     val historyRetentionDays: StateFlow<Int> = settings.historyRetentionDays.stateIn(
         viewModelScope,
@@ -386,10 +382,6 @@ class MainViewModel(
         viewModelScope.launch { settings.setShowSystemApps(enabled) }
     }
 
-    fun dismissMediaNotice() {
-        viewModelScope.launch { settings.setMediaNoticeDismissed(true) }
-    }
-
     fun setDynamicColorEnabled(enabled: Boolean) {
         viewModelScope.launch { settings.setDynamicColorEnabled(enabled) }
     }
@@ -415,6 +407,10 @@ class MainViewModel(
             settings.setHistoryRetentionDays(days)
             repository.cleanupHistory(days)
         }
+    }
+
+    fun deliverNotificationsNow(keys: List<String>) {
+        viewModelScope.launch { repository.deliverNotificationsNow(keys) }
     }
 
     fun archiveHistory(keys: List<String>) {
@@ -545,7 +541,7 @@ private fun TideRoot(
                         }
                     },
                     actions = {
-                        if (!onSettings && currentPrimary != Destination.Inbox) {
+                        if (!onSettings) {
                             if (scheduledOpen && !temporaryOpen) {
                                 Text(
                                     "Open now",
@@ -617,7 +613,6 @@ private fun TideRoot(
                         val notifications by viewModel.history.collectAsStateWithLifecycle()
                         val rules by viewModel.rulesUi.collectAsStateWithLifecycle()
                         val showSystemApps by viewModel.showSystemApps.collectAsStateWithLifecycle()
-                        val mediaNoticeDismissed by viewModel.mediaNoticeDismissed.collectAsStateWithLifecycle()
                         HorizontalPager(
                             state = homePagerState,
                             modifier = Modifier
@@ -633,14 +628,12 @@ private fun TideRoot(
                                     isOpen = isOpen,
                                     manualOpen = manualOpen,
                                     nowMillis = nowMillis,
-                                    onAllowAll = { showTemporaryOpenDialog = true },
-                                    onEndOpen = viewModel::endTemporaryOpen,
                                     snackbarHostState = snackbarHostState,
                                     requestedBatchExpansion = requestedBatchExpansion,
                                     onBatchExpansionConsumed = { requestedBatchExpansion = null },
                                     onArchiveNotifications = viewModel::archiveNotifications,
                                     onUnarchiveNotifications = viewModel::unarchiveNotifications,
-                                    onArchiveHistory = viewModel::archiveHistory,
+                                    onDeliverNow = viewModel::deliverNotificationsNow,
                                 )
                                 Destination.Schedule -> ScheduleScreen(
                                     schedules = schedules,
@@ -656,8 +649,6 @@ private fun TideRoot(
                                 Destination.Priority -> RulesScreen(
                                     rules = rules,
                                     showSystemApps = showSystemApps,
-                                    showMediaNotice = !mediaNoticeDismissed,
-                                    onDismissMediaNotice = viewModel::dismissMediaNotice,
                                     onSetAppMode = viewModel::setAppMode,
                                     onSetChannelMode = viewModel::setChannelMode,
                                 )
@@ -870,58 +861,28 @@ private fun NotificationsScreen(
     isOpen: Boolean,
     manualOpen: ManualOpen,
     nowMillis: Long,
-    onAllowAll: () -> Unit,
-    onEndOpen: () -> Unit,
     snackbarHostState: SnackbarHostState,
     requestedBatchExpansion: String?,
     onBatchExpansionConsumed: () -> Unit,
     onArchiveNotifications: (List<String>) -> Unit,
     onUnarchiveNotifications: (List<String>) -> Unit,
-    onArchiveHistory: (List<String>) -> Unit,
+    onDeliverNow: (List<String>) -> Unit,
 ) {
-    val expandedBatchIds = remember { mutableStateListOf<String>() }
     val scope = rememberCoroutineScope()
-    var showArchived by remember { mutableStateOf(false) }
-
-    LaunchedEffect(requestedBatchExpansion, batches) {
-        val batchId = requestedBatchExpansion ?: return@LaunchedEffect
-        if (batches.any { it.batchId == batchId } && batchId !in expandedBatchIds) {
-            expandedBatchIds.add(batchId)
-        }
-        onBatchExpansionConsumed()
+    LaunchedEffect(requestedBatchExpansion) {
+        if (requestedBatchExpansion != null) onBatchExpansionConsumed()
     }
 
-    val waitingBatches = remember(batches, nowMillis) {
-        batches
-            .filter { it.releaseAtMillis > nowMillis }
-            .sortedBy { it.releaseAtMillis }
+    val sections = remember(batches, notifications, nowMillis) {
+        InboxLayout.partition(batches, notifications, nowMillis)
     }
-    val waitingBatch = waitingBatches.firstOrNull()
-    val deliveredBatches = remember(batches, nowMillis) {
-        batches.filter { it.releaseAtMillis in 1..nowMillis }
-    }
-    val currentDeliveredBatch = remember(deliveredBatches) {
-        deliveredBatches.maxByOrNull { it.releaseAtMillis }
-    }
-    val historyBatchIds = remember(deliveredBatches, currentDeliveredBatch) {
-        deliveredBatches
-            .filter { it.batchId != currentDeliveredBatch?.batchId }
-            .map { it.batchId }
-            .toSet()
-    }
-    val historyNotifications = remember(notifications, historyBatchIds) {
-        notifications.filter { !it.isArchived && (it.batchId == null || it.batchId in historyBatchIds) }
-    }
-    val archivedNotifications = remember(notifications) {
-        notifications.filter { it.isArchived }
-    }
-    val historyGroups = remember(historyNotifications) { groupNotifications(historyNotifications) }
-    val archivedGroups = remember(archivedNotifications) { groupNotifications(archivedNotifications) }
-    val heldCount = waitingBatches.sumOf { it.notificationCount }
     val nextScheduleMillis = remember(schedules, nowMillis) {
         ScheduleCalculator().nextReleases(nowMillis, schedules).minByOrNull { it.triggerAtMillis }?.triggerAtMillis
     }
-    val nextReleaseMillis = waitingBatch?.releaseAtMillis ?: nextScheduleMillis
+    val nextReleaseMillis = when {
+        sections.dropUpcoming -> sections.drop?.releaseAtMillis
+        else -> nextScheduleMillis
+    }
     val remaining = (nextReleaseMillis ?: nowMillis) - nowMillis
     val manualActive = manualOpen.isActive(nowMillis)
     val heroValue = when {
@@ -947,99 +908,61 @@ private fun NotificationsScreen(
             (1f - (remaining / sixthDay).coerceIn(0f, 1f) * 0.55f)
         }
     }
+    val dropGroups = remember(sections.drop) {
+        digestNotifications(sections.drop?.notifications.orEmpty())
+    }
+    val heldGroups = remember(sections.held) { groupNotifications(sections.held) }
+    val olderGroups = remember(sections.older) { groupNotifications(sections.older) }
+
+    fun archiveWithUndo(keys: List<String>, message: String) {
+        onArchiveNotifications(keys)
+        scope.launch {
+            val result = snackbarHostState.showSnackbar(message, "Undo")
+            if (result.name == "ActionPerformed") onUnarchiveNotifications(keys)
+        }
+    }
 
     Column(Modifier.fillMaxSize()) {
-        Column(
-            modifier = Modifier.padding(horizontal = MdSpacing.sm, vertical = MdSpacing.xs),
-            verticalArrangement = Arrangement.spacedBy(MdSpacing.sm),
-        ) {
+        Box(Modifier.padding(TideTopSlot.Padding)) {
             TideHeroCard(
-                eyebrow = if (isOpen) "Open" else "Next delivery",
+                eyebrow = if (isOpen) "Open" else "Next drop",
                 value = heroValue,
                 caption = heroCaption,
                 fill = tideFill,
                 accent = isOpen,
             )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(MdSpacing.sm),
-            ) {
-                TideMetricCard(
-                    label = "Held",
-                    value = heldCount.toString(),
-                    modifier = Modifier.weight(1f),
-                )
-                TideMetricCard(
-                    label = "Open",
-                    value = if (isOpen) "On" else "Off",
-                    modifier = Modifier.weight(1f),
-                    accent = true,
-                    onClick = {
-                        when {
-                            manualActive -> onEndOpen()
-                            !isOpen -> onAllowAll()
-                        }
-                    },
-                )
-            }
-            if (manualActive) {
-                TideActionCard(
-                    title = "Start waiting",
-                    body = "Routine notifications wait again until the next delivery.",
-                    onClick = onEndOpen,
-                    primary = true,
-                )
-            } else if (!isOpen) {
-                TideActionCard(
-                    title = "Allow all",
-                    body = "30 minutes, 1 hour, next delivery, or until I turn it off",
-                    onClick = onAllowAll,
-                )
-            }
         }
         LazyColumn(
             modifier = Modifier.weight(1f),
             contentPadding = PaddingValues(horizontal = MdSpacing.sm, vertical = MdSpacing.xs),
             verticalArrangement = Arrangement.spacedBy(MdSpacing.sm),
         ) {
-        if (waitingBatches.isEmpty()) {
-            item {
-                EmptyState(
-                    title = "Nothing waiting",
-                    body = if (isOpen) {
-                        "Routine notifications are arriving now."
-                    } else {
-                        "Routine notifications will collect here until the next delivery."
-                    },
+            item(key = "section_drop") {
+                InboxSectionLabel(
+                    title = "Tide drop",
+                    caption = sections.drop?.let { batch ->
+                        val whenLabel = if (sections.dropUpcoming) {
+                            "delivers at ${formatTime(batch.releaseAtMillis)}"
+                        } else {
+                            "delivered at ${formatTime(batch.releaseAtMillis)}"
+                        }
+                        "$whenLabel · ${batch.summaryText}"
+                    } ?: "Nothing queued for the next delivery.",
                 )
             }
-        } else {
-            waitingBatches.forEach { batch ->
-                val waitingGroups = groupNotifications(batch.notifications)
-                item(key = "waiting_header_${batch.batchId}") {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            "Waiting · delivers at ${formatTime(batch.releaseAtMillis)}",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.weight(1f),
-                        )
-                        TextButton(
-                            onClick = {
-                                val keys = batch.notificationKeys()
-                                onArchiveNotifications(keys)
-                                scope.launch {
-                                    val result = snackbarHostState.showSnackbar("Delivery archived", "Undo")
-                                    if (result.name == "ActionPerformed") onUnarchiveNotifications(keys)
-                                }
-                            },
-                        ) { Text("Archive delivery") }
-                    }
+            if (dropGroups.isEmpty()) {
+                item(key = "drop_empty") {
+                    EmptyState(
+                        title = "Quiet drop",
+                        body = if (isOpen) {
+                            "Routine notifications are arriving now."
+                        } else {
+                            "The next delivery is empty so far."
+                        },
+                    )
                 }
-                items(waitingGroups, key = { "waiting_${batch.batchId}_${it.rowKey}" }) { group ->
+            } else {
+                items(dropGroups, key = { "drop_${it.rowKey}" }) { group ->
                     NotificationRow(
                         modifier = Modifier.animateItem(
                             fadeInSpec = spring(stiffness = Spring.StiffnessLow),
@@ -1050,112 +973,28 @@ private fun NotificationsScreen(
                             ),
                         ),
                         group = group,
-                        archiveLabel = "Archive",
-                        onArchive = {
-                            onArchiveNotifications(group.notificationKeys)
-                            scope.launch {
-                                val result = snackbarHostState.showSnackbar("Notification archived", "Undo")
-                                if (result.name == "ActionPerformed") onUnarchiveNotifications(group.notificationKeys)
-                            }
+                        archiveLabel = "Dismiss",
+                        onArchive = { archiveWithUndo(group.notificationKeys, "Notification dismissed") },
+                        onDeliverNow = if (sections.dropUpcoming) {
+                            { onDeliverNow(group.notificationKeys) }
+                        } else {
+                            null
                         },
                     )
                 }
             }
-        }
 
-        if (currentDeliveredBatch != null) {
-            item {
-                Text("Delivered", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            item(key = "delivered_${currentDeliveredBatch.batchId}") {
-                BatchSummaryCard(
-                    batch = currentDeliveredBatch,
-                    expanded = true,
-                    isNext = false,
-                    showToggle = false,
-                    statusLabel = "Delivered at ${formatTime(currentDeliveredBatch.releaseAtMillis)}",
-                    onToggle = {},
-                    onArchiveBatch = {
-                        val keys = currentDeliveredBatch.notificationKeys()
-                        onArchiveNotifications(keys)
-                        scope.launch {
-                            val result = snackbarHostState.showSnackbar("Delivery archived", "Undo")
-                            if (result.name == "ActionPerformed") onUnarchiveNotifications(keys)
-                        }
-                    },
-                    onArchiveNotifications = { keys ->
-                        onArchiveNotifications(keys)
-                        scope.launch {
-                            val result = snackbarHostState.showSnackbar("Notification archived", "Undo")
-                            if (result.name == "ActionPerformed") onUnarchiveNotifications(keys)
-                        }
+            item(key = "section_held") {
+                InboxSectionLabel(
+                    title = "Held",
+                    caption = if (heldGroups.isEmpty()) {
+                        "Nothing else waiting."
+                    } else {
+                        "${sections.held.size} waiting outside the drop"
                     },
                 )
             }
-        }
-
-        item {
-            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text("History", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
-                if (historyNotifications.isNotEmpty()) {
-                    TextButton(onClick = {
-                        val keys = notifications
-                            .filter { !it.isArchived && (it.batchId == null || it.batchId in historyBatchIds) }
-                            .map { it.notificationKey }
-                        scope.launch {
-                            onArchiveHistory(keys)
-                            val result = snackbarHostState.showSnackbar("History archived", "Undo")
-                            if (result.name == "ActionPerformed") onUnarchiveNotifications(keys)
-                        }
-                    }) { Text("Archive all") }
-                }
-            }
-        }
-
-        if (historyNotifications.isEmpty()) {
-            item {
-                EmptyState(
-                    title = "Nothing here yet",
-                    body = "Delivered notifications will appear here.",
-                )
-            }
-        }
-
-        items(historyGroups, key = { "history_${it.rowKey}" }) { group ->
-            NotificationRow(
-                modifier = Modifier.animateItem(
-                    fadeInSpec = spring(stiffness = Spring.StiffnessLow),
-                    fadeOutSpec = spring(stiffness = Spring.StiffnessLow),
-                    placementSpec = spring(
-                        dampingRatio = Spring.DampingRatioNoBouncy,
-                        stiffness = Spring.StiffnessLow,
-                    ),
-                ),
-                group = group,
-                archiveLabel = "Archive",
-                onArchive = {
-                    onArchiveNotifications(group.notificationKeys)
-                    scope.launch {
-                        val result = snackbarHostState.showSnackbar("Notification archived", "Undo")
-                        if (result.name == "ActionPerformed") onUnarchiveNotifications(group.notificationKeys)
-                    }
-                },
-            )
-        }
-
-        if (archivedNotifications.isNotEmpty()) {
-            item {
-                FilledTonalButton(
-                    onClick = { showArchived = !showArchived },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(if (showArchived) "Hide archived" else "Archived (${archivedGroups.size})")
-                }
-            }
-        }
-
-        if (showArchived) {
-            items(archivedGroups, key = { "archived_${it.rowKey}" }) { group ->
+            items(heldGroups, key = { "held_${it.rowKey}" }) { group ->
                 NotificationRow(
                     modifier = Modifier.animateItem(
                         fadeInSpec = spring(stiffness = Spring.StiffnessLow),
@@ -1166,101 +1005,52 @@ private fun NotificationsScreen(
                         ),
                     ),
                     group = group,
-                    archiveLabel = "Restore",
-                    onArchive = { onUnarchiveNotifications(group.notificationKeys) },
+                    archiveLabel = "Dismiss",
+                    onArchive = { archiveWithUndo(group.notificationKeys, "Notification dismissed") },
+                    onDeliverNow = { onDeliverNow(group.notificationKeys) },
                 )
             }
-        }
+
+            item(key = "section_older") {
+                InboxSectionLabel(title = "Older", caption = if (olderGroups.isEmpty()) "Nothing delivered yet." else null)
+            }
+            items(olderGroups, key = { "older_${it.rowKey}" }) { group ->
+                val archived = group.items.all { it.isArchived }
+                NotificationRow(
+                    modifier = Modifier.animateItem(
+                        fadeInSpec = spring(stiffness = Spring.StiffnessLow),
+                        fadeOutSpec = spring(stiffness = Spring.StiffnessLow),
+                        placementSpec = spring(
+                            dampingRatio = Spring.DampingRatioNoBouncy,
+                            stiffness = Spring.StiffnessLow,
+                        ),
+                    ),
+                    group = group,
+                    archiveLabel = if (archived) "Restore" else "Dismiss",
+                    onArchive = {
+                        if (archived) onUnarchiveNotifications(group.notificationKeys)
+                        else archiveWithUndo(group.notificationKeys, "Notification dismissed")
+                    },
+                )
+            }
         }
     }
 }
 
 @Composable
-private fun BatchSummaryCard(
-    batch: InboxBatch,
-    expanded: Boolean,
-    isNext: Boolean = false,
-    showToggle: Boolean = true,
-    statusLabel: String? = null,
-    onToggle: () -> Unit,
-    onArchiveBatch: () -> Unit,
-    onArchiveNotifications: (List<String>) -> Unit,
-) {
-    val previewGroups = remember(batch.notifications) {
-        groupNotifications(batch.notifications)
-    }
-    Card(
-        modifier = Modifier
-            .fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = if (isNext) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerLow,
-        ),
-        shape = MaterialTheme.shapes.large,
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(MdSpacing.sm),
-            verticalArrangement = Arrangement.spacedBy(MdSpacing.sm),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(MdSpacing.sm),
-            ) {
-                Surface(
-                    modifier = Modifier.size(48.dp),
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.secondaryContainer,
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Text(batch.notificationCount.toString(), style = MaterialTheme.typography.titleMedium)
-                    }
-                }
-                Column(Modifier.weight(1f)) {
-                    Text(batch.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(
-                        batch.summaryText,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    val label = statusLabel ?: batch.releaseLabel
-                    if (label.isNotEmpty()) {
-                        Text(
-                            label,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-                if (showToggle) {
-                    IconButton(onClick = onToggle) {
-                        Icon(if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore, contentDescription = "Toggle delivery")
-                    }
-                }
-            }
-            AnimatedVisibility(
-                visible = expanded,
-                enter = fadeIn() + expandVertically(),
-                exit = fadeOut() + shrinkVertically(),
-            ) {
-                Column(verticalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
-                    previewGroups.forEach { group ->
-                        key(group.rowKey) {
-                            NotificationRow(
-                                group = group,
-                                archiveLabel = "Archive",
-                                onArchive = { onArchiveNotifications(group.notificationKeys) },
-                            )
-                        }
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
-                        OutlinedButton(onClick = onArchiveBatch) { Text("Archive delivery") }
-                    }
-                }
-            }
+private fun InboxSectionLabel(title: String, caption: String?) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(
+            title,
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (!caption.isNullOrBlank()) {
+            Text(
+                caption,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -1271,15 +1061,15 @@ private fun NotificationRow(
     group: NotificationGroup,
     archiveLabel: String,
     onArchive: () -> Unit,
+    onDeliverNow: (() -> Unit)? = null,
 ) {
-    // Reset local swipe state if this composition slot is rebound to different
-    // notifications. This is especially important for the non-lazy batch previews.
-    key(group.rowKey, archiveLabel) {
+    key(group.rowKey, archiveLabel, onDeliverNow != null) {
         NotificationRowContent(
             modifier = modifier,
             group = group,
             archiveLabel = archiveLabel,
             onArchive = onArchive,
+            onDeliverNow = onDeliverNow,
         )
     }
 }
@@ -1290,16 +1080,22 @@ private fun NotificationRowContent(
     group: NotificationGroup,
     archiveLabel: String,
     onArchive: () -> Unit,
+    onDeliverNow: (() -> Unit)?,
 ) {
     val swipeEnabled = archiveLabel != "Restore"
     if (swipeEnabled) {
-        SwipeToArchive(modifier = modifier, onArchive = onArchive) {
+        SwipeableNotificationRow(
+            modifier = modifier,
+            onDismiss = onArchive,
+            onDeliverNow = onDeliverNow,
+        ) {
             NotificationCard(
                 modifier = Modifier,
                 group = group,
                 archiveLabel = archiveLabel,
                 swipeEnabled = true,
                 onArchive = onArchive,
+                onDeliverNow = onDeliverNow,
             )
         }
     } else {
@@ -1309,14 +1105,15 @@ private fun NotificationRowContent(
             archiveLabel = archiveLabel,
             swipeEnabled = false,
             onArchive = onArchive,
+            onDeliverNow = null,
         )
     }
 }
 
-/** How far a row must travel, as a fraction of its width, before the release archives it. */
+/** How far a row must travel, as a fraction of its width, before the release commits. */
 private const val SwipeArchiveThreshold = 0.32f
 
-/** A fling past this speed (px/s) archives even from a short drag. */
+/** A fling past this speed (px/s) commits even from a short drag. */
 private const val SwipeArchiveVelocity = 1200f
 
 /** Release below the threshold: a soft glide home that keeps a trace of the fling. */
@@ -1326,19 +1123,13 @@ private val SwipeReturnSpec = spring<Float>(dampingRatio = 0.8f, stiffness = 200
 private val SwipeExitSpec = spring<Float>(dampingRatio = 1f, stiffness = 160f)
 
 /**
- * Swipe-to-archive with a hand-tuned settle.
- *
- * `SwipeToDismissBox` keeps its animation spec internal, and its default spring throws
- * the row off screen faster than anything else in the app moves. It also archives the
- * moment the threshold is crossed, so the row vanishes mid-gesture instead of finishing
- * it. Driving the gesture here gives a continuous motion: the row gains weight as it
- * travels, the release carries the finger's velocity into a slow spring, and the list is
- * only told to archive once the row has cleared the edge and faded.
+ * Android-shade swipe: left dismisses, right delivers now when that action exists.
  */
 @Composable
-private fun SwipeToArchive(
+private fun SwipeableNotificationRow(
     modifier: Modifier = Modifier,
-    onArchive: () -> Unit,
+    onDismiss: () -> Unit,
+    onDeliverNow: (() -> Unit)?,
     content: @Composable () -> Unit,
 ) {
     val hapticFeedback = LocalHapticFeedback.current
@@ -1346,14 +1137,13 @@ private fun SwipeToArchive(
     val offsetX = remember { Animatable(0f) }
     var width by remember { mutableFloatStateOf(0f) }
     var dragTarget by remember { mutableFloatStateOf(0f) }
-    var archiving by remember { mutableStateOf(false) }
+    var settling by remember { mutableStateOf(false) }
     var pastThreshold by remember { mutableStateOf(false) }
 
-    val progress = if (width > 0f) (offsetX.value / width).coerceIn(0f, 1f) else 0f
-    // On the way out the row dissolves as it clears the edge, so the gap it leaves
-    // starts collapsing while it is still moving. Dragging never fades: only a release
-    // that commits to the archive does.
-    val exitFade = if (archiving) 1f - ((progress - 0.7f) / 0.25f).coerceIn(0f, 1f) else 1f
+    val progress = if (width > 0f) (offsetX.value / width).coerceIn(-1f, 1f) else 0f
+    val exitFade = if (settling) 1f - ((kotlin.math.abs(progress) - 0.7f) / 0.25f).coerceIn(0f, 1f) else 1f
+    val minOffset = -width
+    val maxOffset = if (onDeliverNow != null && width > 0f) width else 0f
 
     Box(
         modifier = modifier
@@ -1362,13 +1152,11 @@ private fun SwipeToArchive(
             .graphicsLayer { alpha = exitFade }
             .draggable(
                 orientation = Orientation.Horizontal,
-                enabled = !archiving,
+                enabled = !settling,
                 state = rememberDraggableState { delta ->
-                    // Resistance builds with distance, so the row eases into the
-                    // threshold instead of shooting past it.
-                    val resistance = 1f - 0.45f * progress
-                    dragTarget = (dragTarget + delta * resistance).coerceIn(0f, width)
-                    val crossed = width > 0f && dragTarget / width >= SwipeArchiveThreshold
+                    val resistance = 1f - 0.45f * kotlin.math.abs(progress)
+                    dragTarget = (dragTarget + delta * resistance).coerceIn(minOffset, maxOffset)
+                    val crossed = width > 0f && kotlin.math.abs(dragTarget / width) >= SwipeArchiveThreshold
                     if (crossed != pastThreshold) {
                         pastThreshold = crossed
                         hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
@@ -1377,20 +1165,24 @@ private fun SwipeToArchive(
                 },
                 onDragStarted = { dragTarget = offsetX.value },
                 onDragStopped = { velocity ->
-                    val flung = velocity > SwipeArchiveVelocity && progress > 0.1f
-                    if (width > 0f && (progress >= SwipeArchiveThreshold || flung)) {
-                        archiving = true
+                    val fraction = if (width > 0f) dragTarget / width else 0f
+                    val dismissFling = velocity < -SwipeArchiveVelocity && fraction < -0.1f
+                    val deliverFling = onDeliverNow != null && velocity > SwipeArchiveVelocity && fraction > 0.1f
+                    val dismiss = fraction <= -SwipeArchiveThreshold || dismissFling
+                    val deliver = onDeliverNow != null && (fraction >= SwipeArchiveThreshold || deliverFling)
+                    if (width > 0f && (dismiss || deliver)) {
+                        settling = true
                         hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
-                        // Hand the row back to the list once it has faded out, rather
-                        // than waiting for the spring's long tail to settle.
+                        val target = if (dismiss) -width else width
+                        val action = if (dismiss) onDismiss else onDeliverNow
                         var handedOff = false
-                        offsetX.animateTo(width, SwipeExitSpec, initialVelocity = velocity) {
-                            if (!handedOff && value >= width * 0.95f) {
+                        offsetX.animateTo(target, SwipeExitSpec, initialVelocity = velocity) {
+                            if (!handedOff && kotlin.math.abs(value) >= width * 0.95f) {
                                 handedOff = true
-                                onArchive()
+                                action?.invoke()
                             }
                         }
-                        if (!handedOff) onArchive()
+                        if (!handedOff) action?.invoke()
                     } else {
                         pastThreshold = false
                         offsetX.animateTo(0f, SwipeReturnSpec, initialVelocity = velocity)
@@ -1402,23 +1194,49 @@ private fun SwipeToArchive(
             modifier = Modifier
                 .matchParentSize()
                 .clip(MaterialTheme.shapes.medium)
-                .background(MaterialTheme.colorScheme.tertiaryContainer)
+                .background(
+                    when {
+                        offsetX.value > 0f -> MaterialTheme.colorScheme.primaryContainer
+                        else -> MaterialTheme.colorScheme.tertiaryContainer
+                    },
+                )
                 .padding(horizontal = MdSpacing.sm),
-            contentAlignment = Alignment.CenterStart,
+            contentAlignment = if (offsetX.value > 0f) Alignment.CenterStart else Alignment.CenterEnd,
         ) {
-            Icon(
-                Icons.Filled.Archive,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onTertiaryContainer,
+            val reveal = (kotlin.math.abs(progress) / SwipeArchiveThreshold).coerceIn(0f, 1f)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(MdSpacing.xxs),
                 modifier = Modifier.graphicsLayer {
-                    // The icon arrives with the gesture and is fully there at the
-                    // point of no return.
-                    val reveal = (progress / SwipeArchiveThreshold).coerceIn(0f, 1f)
                     alpha = reveal
                     scaleX = 0.8f + 0.2f * reveal
                     scaleY = 0.8f + 0.2f * reveal
                 },
-            )
+            ) {
+                if (offsetX.value > 0f) {
+                    Icon(
+                        Icons.Filled.NotificationsActive,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                    Text(
+                        "Deliver now",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                } else {
+                    Text(
+                        "Dismiss",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer,
+                    )
+                    Icon(
+                        Icons.Filled.Archive,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                    )
+                }
+            }
         }
         Box(modifier = Modifier.graphicsLayer { translationX = offsetX.value }) {
             content()
@@ -1433,27 +1251,37 @@ private fun NotificationCard(
     archiveLabel: String,
     swipeEnabled: Boolean,
     onArchive: () -> Unit,
+    onDeliverNow: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val item = group.primary
+    val actions = buildList {
+        add(
+            CustomAccessibilityAction(archiveLabel) {
+                onArchive()
+                true
+            },
+        )
+        if (onDeliverNow != null) {
+            add(
+                CustomAccessibilityAction("Deliver now") {
+                    onDeliverNow()
+                    true
+                },
+            )
+        }
+        add(
+            CustomAccessibilityAction("Open") {
+                openOriginalNotification(context, item)
+                true
+            },
+        )
+    }
     Box(modifier = modifier) {
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
-                .then(
-                    if (swipeEnabled) {
-                        Modifier.semantics {
-                            customActions = listOf(
-                                CustomAccessibilityAction("Archive") {
-                                    onArchive()
-                                    true
-                                },
-                            )
-                        }
-                    } else {
-                        Modifier
-                    },
-                ),
+                .semantics { customActions = actions },
             color = MaterialTheme.colorScheme.surface,
             shape = MaterialTheme.shapes.medium,
             tonalElevation = 1.dp,
@@ -1493,14 +1321,7 @@ private fun NotificationCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                if (swipeEnabled) {
-                    Icon(
-                        Icons.AutoMirrored.Filled.ArrowForward,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(18.dp),
-                    )
-                } else {
+                if (!swipeEnabled) {
                     IconButton(onClick = onArchive) {
                         Icon(
                             Icons.Filled.Restore,
@@ -1526,8 +1347,6 @@ private fun openOriginalNotification(context: Context, item: NotificationEntity)
 private fun RulesScreen(
     rules: List<AppRuleUi>,
     showSystemApps: Boolean,
-    showMediaNotice: Boolean,
-    onDismissMediaNotice: () -> Unit,
     onSetAppMode: (InstalledApp, DeliveryMode) -> Unit,
     onSetChannelMode: (ChannelRuleUi, DeliveryMode?) -> Unit,
 ) {
@@ -1539,13 +1358,12 @@ private fun RulesScreen(
             .filter { it.matches(query) }
     }
     val apps = visibleRules.map { it.app }
-    val instantCount = apps.count { it.mode == DeliveryMode.INSTANT || it.role.lockedInstant }
+    val instantCount = apps.count { it.mode == DeliveryMode.INSTANT }
 
     AppSelectionPane(
         apps = apps,
-        isInstant = { it.mode == DeliveryMode.INSTANT || it.role.lockedInstant },
+        isInstant = { it.mode == DeliveryMode.INSTANT },
         onToggle = { app, instant ->
-            if (app.role.lockedInstant) return@AppSelectionPane
             onSetAppMode(app, if (instant) DeliveryMode.INSTANT else DeliveryMode.BATCH)
         },
         query = query,
@@ -1564,12 +1382,7 @@ private fun RulesScreen(
                 )
             }
         },
-        mediaNotice = if (showMediaNotice) {
-            { MediaAppsNotice(onDismiss = onDismissMediaNotice) }
-        } else {
-            null
-        },
-        onRowClick = { openedPackage = it.packageName },
+        onLongClick = { openedPackage = it.packageName },
         exceptionCount = { app ->
             rules.firstOrNull { it.app.packageName == app.packageName }
                 ?.channels
@@ -1620,15 +1433,7 @@ private fun AppRuleSheet(
                     )
                 }
             }
-            if (appRule.app.isMediaPlayer) {
-                Text(
-                    "A player stays instant: batching one takes away its playback controls and can stop the sound.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            } else {
-                DeliveryModeSelector(appRule.app.mode) { onSetAppMode(appRule.app, it) }
-            }
+            DeliveryModeSelector(appRule.app.mode) { onSetAppMode(appRule.app, it) }
             if (appRule.channels.isNotEmpty()) {
                 Text(
                     "Categories",
@@ -1637,61 +1442,6 @@ private fun AppRuleSheet(
                 )
                 appRule.channels.forEach { channel ->
                     ChannelRuleRow(channel, appRule.app.mode, onSetChannelMode)
-                }
-            }
-        }
-    }
-}
-
-/**
- * A player's notification is what keeps its playback service alive, so batching one
- * takes the controls away and can stop the audio. Media apps are already defaulted to
- * instant (see `RECOMMENDED_INSTANT_HINTS`); this explains why, for anyone about to
- * change one by hand. Dismissible, because it is only worth reading once.
- */
-@Composable
-private fun MediaAppsNotice(
-    modifier: Modifier = Modifier,
-    onDismiss: (() -> Unit)? = null,
-) {
-    Surface(
-        modifier = modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.secondaryContainer,
-        shape = MaterialTheme.shapes.medium,
-    ) {
-        Row(
-            modifier = Modifier.padding(start = MdSpacing.sm, top = MdSpacing.sm, bottom = MdSpacing.sm, end = MdSpacing.xs),
-            horizontalArrangement = Arrangement.spacedBy(MdSpacing.sm),
-            verticalAlignment = Alignment.Top,
-        ) {
-            Icon(
-                Icons.Filled.PlayCircle,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSecondaryContainer,
-            )
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(MdSpacing.xxs),
-            ) {
-                Text(
-                    "Music and video apps",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer,
-                )
-                Text(
-                    "Batching a player takes away its playback controls and can stop the sound. " +
-                        "Tide leaves them on Instant, and it is best to keep it that way.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer,
-                )
-            }
-            if (onDismiss != null) {
-                IconButton(onClick = onDismiss) {
-                    Icon(
-                        Icons.Filled.Close,
-                        contentDescription = "Dismiss",
-                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                    )
                 }
             }
         }
@@ -1836,14 +1586,8 @@ private fun ScheduleScreen(
     var editingWindow by remember { mutableStateOf<InstantWindowEntity?>(null) }
     val openWindow = instantWindows.firstOrNull()
 
-    LazyVerticalGrid(
-        columns = GridCells.Fixed(2),
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(MdSpacing.sm),
-        horizontalArrangement = Arrangement.spacedBy(MdSpacing.sm),
-        verticalArrangement = Arrangement.spacedBy(MdSpacing.sm),
-    ) {
-        item(span = { GridItemSpan(maxLineSpan) }) {
+    Column(Modifier.fillMaxSize()) {
+        Box(Modifier.padding(TideTopSlot.Padding)) {
             TideHeroCard(
                 eyebrow = "Next delivery",
                 value = nextSchedule?.let { formatMinutes(it.releaseMinutes) } ?: "—",
@@ -1854,7 +1598,16 @@ private fun ScheduleScreen(
                 fill = tideFill,
             )
         }
-        items(schedules, key = { "schedule_${it.id}" }) { schedule ->
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(2),
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+            contentPadding = PaddingValues(horizontal = MdSpacing.sm, vertical = MdSpacing.xs),
+            horizontalArrangement = Arrangement.spacedBy(MdSpacing.sm),
+            verticalArrangement = Arrangement.spacedBy(MdSpacing.sm),
+        ) {
+            items(schedules, key = { "schedule_${it.id}" }) { schedule ->
             TideMetricCard(
                 label = activeDaysSummary(schedule.activeDaysMask),
                 value = formatMinutes(schedule.releaseMinutes),
@@ -1901,6 +1654,7 @@ private fun ScheduleScreen(
                     onClick = { editingWindow = window },
                 )
             }
+        }
         }
     }
 
@@ -2312,7 +2066,14 @@ private fun SettingsScreen(
             )
         }
         item { SettingsSectionLabel("Notification management") }
-        item { SwitchRow("Show system apps", "List system apps alongside the rest.", showSystemApps, onShowSystemApps) }
+        item {
+            SwitchRow(
+                title = "Show system apps",
+                body = "System apps stay Instant unless you change them. This only lists them with the rest.",
+                checked = showSystemApps,
+                onChecked = onShowSystemApps,
+            )
+        }
         item {
             RetentionCard(retentionDays = retentionDays, onRetentionDays = onRetentionDays, onCleanupNow = onCleanupNow)
         }
@@ -2452,10 +2213,6 @@ private fun OnboardingScreen(
                 if (app.packageName !in selectedInstantPackages) selectedInstantPackages.add(app.packageName)
             }
             seededDefaults = true
-        } else {
-            nonSystemApps.filter { it.role.lockedInstant }.forEach { app ->
-                if (app.packageName !in selectedInstantPackages) selectedInstantPackages.add(app.packageName)
-            }
         }
     }
 
@@ -2723,9 +2480,8 @@ private fun OnboardingAppsPage(nonSystemApps: List<InstalledApp>, selectedInstan
     val instantCount = selectedInstantPackages.size
     AppSelectionPane(
         apps = nonSystemApps,
-        isInstant = { it.packageName in selectedInstantPackages || it.role.lockedInstant },
+        isInstant = { it.packageName in selectedInstantPackages },
         onToggle = { app, instant ->
-            if (app.role.lockedInstant) return@AppSelectionPane
             if (instant) {
                 if (app.packageName !in selectedInstantPackages) selectedInstantPackages.add(app.packageName)
             } else {
@@ -2736,11 +2492,6 @@ private fun OnboardingAppsPage(nonSystemApps: List<InstalledApp>, selectedInstan
         onQueryChange = { query = it },
         header = {
             Text("What should always reach you?", style = MaterialTheme.typography.headlineSmall)
-            Text(
-                "Instant apps reach you the moment they arrive. Everything else waits for a delivery time.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
             if (instantCount > 0) {
                 Text(
                     "$instantCount instant app${if (instantCount == 1) "" else "s"}",
@@ -2891,6 +2642,19 @@ private fun NotificationEntity.matches(query: String): Boolean {
 private fun NotificationGroup.matches(query: String): Boolean {
     if (query.isBlank()) return true
     return items.any { it.matches(query) }
+}
+
+private fun digestNotifications(items: List<NotificationEntity>): List<NotificationGroup> {
+    return items
+        .groupBy { it.packageName }
+        .values
+        .map { groupedItems ->
+            NotificationGroup(
+                key = "digest_${groupedItems.first().packageName}",
+                items = groupedItems.sortedByDescending { it.postedAtMillis },
+            )
+        }
+        .sortedByDescending { it.primary.postedAtMillis }
 }
 
 private fun groupNotifications(items: List<NotificationEntity>): List<NotificationGroup> {

@@ -56,14 +56,36 @@ class AppClassifierTest {
     }
 
     @Test
-    fun mediaPlayersAreLockedInstant() {
+    fun mediaPlayersDefaultInstantAndStayInAlwaysInstantWhenTurnedOff() {
         val netflix = classify("com.netflix.mediaclient", "Netflix", isMediaPlayer = true)
         assertEquals(AppRole.MEDIA, netflix)
-        assertTrue(netflix.lockedInstant)
+        assertTrue(netflix.defaultsToInstant)
         assertEquals(AppSelectionGroup.ALWAYS_INSTANT, netflix.selectionGroup)
+        assertEquals(AppSelectionGroup.ALWAYS_INSTANT, pickerSelectionGroup(netflix, instant = true))
+        assertEquals(AppSelectionGroup.ALWAYS_INSTANT, pickerSelectionGroup(netflix, instant = false))
         assertEquals(
             AppRole.MEDIA,
             classify("com.spotify.music", "Spotify", androidCategory = AppClassifier.CATEGORY_AUDIO),
+        )
+    }
+
+    @Test
+    fun pickerHidesEnabledAppsFromRecommended() {
+        assertEquals(
+            AppSelectionGroup.INSTANT,
+            pickerSelectionGroup(AppRole.MESSAGING, instant = true),
+        )
+        assertEquals(
+            AppSelectionGroup.TIME_SENSITIVE,
+            pickerSelectionGroup(AppRole.MESSAGING, instant = false),
+        )
+        assertEquals(
+            AppSelectionGroup.INSTANT,
+            pickerSelectionGroup(AppRole.SOCIAL, instant = true),
+        )
+        assertEquals(
+            AppSelectionGroup.EVERYTHING_ELSE,
+            pickerSelectionGroup(AppRole.SOCIAL, instant = false),
         )
     }
 
@@ -114,6 +136,14 @@ class AppClassifierTest {
         assertEquals(
             DeliveryMode.INSTANT,
             AppClassifier.defaultDeliveryMode(AppRole.OTHER, isSystemApp = true, hasLauncherActivity = false),
+        )
+        assertEquals(
+            DeliveryMode.INSTANT,
+            AppClassifier.defaultDeliveryMode(AppRole.SOCIAL, isSystemApp = true, hasLauncherActivity = true),
+        )
+        assertEquals(
+            DeliveryMode.INSTANT,
+            AppClassifier.defaultDeliveryMode(AppRole.OTHER, isSystemApp = true, hasLauncherActivity = true),
         )
     }
 

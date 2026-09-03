@@ -5,6 +5,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -24,10 +25,15 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.tide.app.ui.theme.MdSpacing
 
+/** Shared Inbox/Schedule top slot so the wave card does not jump between tabs. */
+object TideTopSlot {
+    val Padding = PaddingValues(horizontal = MdSpacing.sm, vertical = MdSpacing.sm)
+    val HeroHeight = 112.dp
+}
+
 /**
- * Inbox and Schedule bento pieces: a wave-filled hero, supporting tiles, and a
- * full-width action card. Material You supplies the hue; Waiting and Open
- * stay distinct through container roles.
+ * Inbox and Schedule bento pieces: a compact wave-filled status, supporting
+ * tiles for When, and a full-width action. Material You supplies the hue.
  */
 @Composable
 fun TideHeroCard(
@@ -63,7 +69,7 @@ fun TideHeroCard(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(176.dp)
+                .height(TideTopSlot.HeroHeight)
                 .clip(MaterialTheme.shapes.extraLarge),
         ) {
             val waveHeight = (0.28f + 0.62f * fill.coerceIn(0f, 1f)).coerceIn(0.28f, 0.9f)
@@ -77,7 +83,7 @@ fun TideHeroCard(
             Column(
                 modifier = Modifier
                     .align(Alignment.Center)
-                    .padding(horizontal = MdSpacing.md, vertical = MdSpacing.sm),
+                    .padding(horizontal = MdSpacing.md, vertical = MdSpacing.xs),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Text(
@@ -89,16 +95,16 @@ fun TideHeroCard(
                 )
                 Text(
                     value,
-                    style = MaterialTheme.typography.displayLarge,
+                    style = MaterialTheme.typography.displaySmall,
                     color = onContainer,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
                     caption,
-                    style = MaterialTheme.typography.bodyLarge,
+                    style = MaterialTheme.typography.bodyMedium,
                     color = onContainer.copy(alpha = 0.86f),
-                    maxLines = 2,
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
