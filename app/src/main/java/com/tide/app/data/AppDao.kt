@@ -85,6 +85,9 @@ interface AppDao {
     @Query("UPDATE notifications SET isArchived = 0 WHERE notificationKey IN (:keys)")
     suspend fun unarchiveNotifications(keys: List<String>)
 
+    @Query("DELETE FROM notifications WHERE notificationKey IN (:keys)")
+    suspend fun deleteNotifications(keys: List<String>)
+
     @Query("UPDATE notifications SET batchId = :batchId WHERE notificationKey IN (:keys)")
     suspend fun moveNotificationsToBatch(keys: List<String>, batchId: String)
 

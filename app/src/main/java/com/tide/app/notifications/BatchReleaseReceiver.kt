@@ -19,8 +19,7 @@ class BatchReleaseReceiver : BroadcastReceiver() {
                         ?.takeIf { it > 0 }
                         ?.let { app.repository.batchIdForSchedule(it) }
                 if (batchId != null) {
-                    val notifications = app.repository.notificationsForBatch(batchId)
-                    NotificationPublisher(context).showDigest(batchId, notifications)
+                    app.repository.releaseBatch(batchId)
                 }
                 app.repository.reschedule()
             } finally {

@@ -339,7 +339,7 @@ class Repository(
 
     suspend fun archiveNotification(key: String) {
         dao.archiveNotification(key)
-        NotificationStatusController.cancel(key)
+        removeFromShade(key)
     }
 
     suspend fun unarchiveNotification(key: String) = dao.unarchiveNotification(key)
@@ -347,12 +347,24 @@ class Repository(
     suspend fun archiveNotifications(keys: List<String>) {
         if (keys.isNotEmpty()) {
             dao.archiveNotifications(keys)
-            keys.forEach(NotificationStatusController::cancel)
+            keys.forEach(::removeFromShade)
         }
     }
 
     suspend fun unarchiveNotifications(keys: List<String>) {
         if (keys.isNotEmpty()) dao.unarchiveNotifications(keys)
+    }
+
+    suspend fun dismissNotifications(keys: List<String>): List<NotificationEntity> {
+        if (keys.isEmpty()) return emptyList()
+        val items = keys.mapNotNull { dao.notificationByKey(it) }
+        dao.deleteNotifications(keys)
+        keys.forEach(::removeFromShade)
+        return items
+    }
+
+    suspend fun restoreNotifications(items: List<NotificationEntity>) {
+        items.forEach { dao.upsertNotification(it) }
     }
 
     suspend fun archiveBatch(batchId: String) {
@@ -366,7 +378,7 @@ class Repository(
         } else {
             dao.archiveBatch(batchId)
         }
-        keys.forEach(NotificationStatusController::cancel)
+        keys.forEach(::removeFromShade)
     }
 
     suspend fun unarchiveBatch(batchId: String) {
@@ -440,7 +452,7 @@ class Repository(
         if (waiting.isEmpty()) return 0
         val releaseBatchId = openReleaseBatchId(nowMillis)
         dao.moveNotificationsToBatch(waiting.map { it.notificationKey }, releaseBatchId)
-        NotificationPublisher(context).showDigest(releaseBatchId, waiting)
+        NotificationPublisher(context).release(waiting)
         return waiting.size
     }
 
@@ -453,8 +465,14 @@ class Repository(
         if (waiting.isEmpty()) return 0
         val releaseBatchId = openReleaseBatchId(now)
         dao.moveNotificationsToBatch(waiting.map { it.notificationKey }, releaseBatchId)
-        NotificationPublisher(context).showDigest(releaseBatchId, waiting)
+        NotificationPublisher(context).release(waiting)
         return waiting.size
+    }
+
+    suspend fun releaseBatch(batchId: String): Int {
+        val notifications = dao.notificationsForBatch(batchId)
+        NotificationPublisher(context).release(notifications)
+        return notifications.size
     }
 
     suspend fun batchIdForSchedule(id: Long): String? {
@@ -727,6 +745,11 @@ class Repository(
         val now = java.time.Instant.ofEpochMilli(nowMillis).atZone(ZoneId.systemDefault())
         val minutes = now.hour * 60 + now.minute
         return "${now.toLocalDate()}-batch-0-$minutes"
+    }
+
+    private fun removeFromShade(key: String) {
+        NotificationStatusController.cancel(key)
+        NotificationPublisher.cancel(context, key)
     }
 
     companion object {
