@@ -25,9 +25,9 @@ import androidx.compose.ui.unit.dp
 import com.tide.app.ui.theme.MdSpacing
 
 /**
- * Direction A bento pieces: a wave-filled hero, supporting tiles, and a
+ * Inbox and Schedule bento pieces: a wave-filled hero, supporting tiles, and a
  * full-width action card. Material You supplies the hue; Waiting and Open
- * stay distinct through container roles, not a copied palette.
+ * stay distinct through container roles.
  */
 @Composable
 fun TideHeroCard(

@@ -15,48 +15,34 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.matchParentSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -82,17 +68,14 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Inbox
-import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.PauseCircle
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Schedule
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -112,7 +95,6 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -120,7 +102,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TextField
 import androidx.compose.material3.TimePicker
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberTimePickerState
@@ -141,8 +122,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -155,7 +134,6 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -174,8 +152,6 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import com.tide.app.core.Insights
-import com.tide.app.core.InsightsCalculator
 import com.tide.app.core.ManualOpen
 import com.tide.app.core.OpenHoursCalculator
 import com.tide.app.core.ScheduleCalculator
@@ -199,7 +175,6 @@ import com.tide.app.ui.TideMetricCard
 import com.tide.app.ui.TideWaves
 import com.tide.app.ui.theme.MdSpacing
 import com.tide.app.ui.theme.TideTheme
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
@@ -210,9 +185,6 @@ import java.time.DayOfWeek
 import java.time.format.TextStyle
 import java.util.Locale
 import java.util.Date
-import kotlin.math.cos
-import kotlin.math.roundToInt
-import kotlin.math.sin
 
 class MainActivity : ComponentActivity() {
     private var pendingBatchId by mutableStateOf<String?>(null)
@@ -291,11 +263,6 @@ class MainViewModel(
         viewModelScope,
         SharingStarted.WhileSubscribed(5_000),
         emptyList(),
-    )
-    val insights: StateFlow<Insights> = repository.insights.stateIn(
-        viewModelScope,
-        SharingStarted.WhileSubscribed(5_000),
-        InsightsCalculator().calculate(emptyList()),
     )
     val showSystemApps: StateFlow<Boolean> = settings.showSystemApps.stateIn(
         viewModelScope,
@@ -1624,129 +1591,6 @@ private fun RulesScreen(
     }
 }
 
-@Composable
-private fun RulesSectionHeader(mode: DeliveryMode, count: Int) {
-    Row(
-        modifier = Modifier.padding(top = MdSpacing.xs),
-        horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            mode.icon(),
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(18.dp),
-        )
-        Text(
-            "${mode.label()} · $count",
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Text(
-            when (mode) {
-                DeliveryMode.INSTANT -> "arrive as they happen"
-                DeliveryMode.BATCH -> "wait for a delivery time"
-            },
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-}
-
-/**
- * A drawer tile: icon and name, the way the app is already recognised elsewhere on the
- * phone. Which half of the screen it sits in carries the mode, so the tile itself only
- * has to show selection and whether some of the app's channels disagree with it.
- */
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun AppTile(
-    appRule: AppRuleUi,
-    selected: Boolean,
-    onClick: () -> Unit,
-    onLongClick: () -> Unit,
-) {
-    val overriddenChannels = appRule.channels.count { it.mode != null && it.mode != appRule.app.mode }
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(MaterialTheme.shapes.medium)
-            .background(if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent)
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-            .padding(vertical = MdSpacing.xs, horizontal = MdSpacing.xxs),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(MdSpacing.xxs),
-    ) {
-        Box {
-            AppIcon(packageName = appRule.app.packageName, label = appRule.app.label, modifier = Modifier.size(48.dp))
-            if (selected) {
-                Icon(
-                    Icons.Filled.CheckCircle,
-                    contentDescription = "Selected",
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .size(18.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.surface),
-                )
-            } else if (overriddenChannels > 0) {
-                Icon(
-                    Icons.Filled.Tune,
-                    contentDescription = "$overriddenChannels channels set differently",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .size(16.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.surface),
-                )
-            }
-        }
-        Text(
-            appRule.app.label,
-            style = MaterialTheme.typography.labelSmall,
-            color = if (selected) {
-                MaterialTheme.colorScheme.onPrimaryContainer
-            } else {
-                MaterialTheme.colorScheme.onSurface
-            },
-            textAlign = TextAlign.Center,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
-}
-
-@Composable
-private fun SelectionBar(count: Int, onClear: () -> Unit, onMove: (DeliveryMode) -> Unit) {
-    Surface(tonalElevation = 3.dp, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = MdSpacing.sm, vertical = MdSpacing.xs),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs),
-        ) {
-            IconButton(onClick = onClear) {
-                Icon(Icons.Filled.Close, contentDescription = "Clear selection")
-            }
-            Text(
-                "$count selected",
-                style = MaterialTheme.typography.labelLarge,
-                modifier = Modifier.weight(1f),
-            )
-            DeliveryMode.entries.forEach { mode ->
-                FilledTonalButton(onClick = { onMove(mode) }) {
-                    Icon(mode.icon(), contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.size(MdSpacing.xxs))
-                    Text(mode.label())
-                }
-            }
-        }
-    }
-}
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AppRuleSheet(
@@ -2948,171 +2792,6 @@ private fun PermissionCard(
             } else {
                 Button(onClick = onClick) { Text(action) }
             }
-        }
-    }
-}
-
-@Composable
-private fun InsightsScreen(insights: Insights) {
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(MdSpacing.sm),
-        verticalArrangement = Arrangement.spacedBy(MdSpacing.sm),
-    ) {
-        item {
-            ExpressiveStatusCard(
-                title = "Distraction shield",
-                body = "${insights.distractionsSaved} interruptions kept out of your face.",
-                icon = Icons.Filled.CheckCircle,
-            )
-        }
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(MdSpacing.sm)) {
-                MetricCard("Received", insights.received, Icons.Filled.NotificationsActive, Modifier.weight(1f))
-                MetricCard("Saved", insights.distractionsSaved, Icons.Filled.CheckCircle, Modifier.weight(1f))
-            }
-        }
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(MdSpacing.sm)) {
-                MetricCard("Batched", insights.batched, Icons.Filled.Inbox, Modifier.weight(1f))
-                MetricCard("Instant", insights.instant, Icons.Filled.Schedule, Modifier.weight(1f))
-            }
-        }
-        item {
-            SectionCard("Busiest hours") {
-                if (insights.busiestHours.isEmpty()) {
-                    Text("No activity yet.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                } else {
-                    insights.busiestHours.forEach { Text("${"%02d".format(it.hour)}:00 · ${it.count} notifications") }
-                }
-            }
-        }
-        item {
-            SectionCard("Top apps") {
-                if (insights.topApps.isEmpty()) {
-                    Text("Per-app totals will appear after notifications are captured.")
-                } else {
-                    insights.topApps.take(8).forEach { app ->
-                        Row(Modifier.fillMaxWidth()) {
-                            Text(app.appLabel, modifier = Modifier.weight(1f))
-                            Text("${app.received} total · ${app.batched} saved")
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun MetricCard(label: String, value: Int, icon: ImageVector, modifier: Modifier = Modifier) {
-    val animatedValue by animateFloatAsState(targetValue = value.toFloat(), label = "$label metric")
-    Card(
-        modifier = modifier.aspectRatio(1.05f),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
-        shape = MaterialTheme.shapes.large,
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(MdSpacing.sm),
-            verticalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Icon(icon, contentDescription = null)
-            Column {
-                Text(animatedValue.roundToInt().toString(), style = MaterialTheme.typography.displaySmall)
-                Text(label, style = MaterialTheme.typography.labelLarge)
-            }
-        }
-    }
-}
-
-@Composable
-private fun ExpressiveStatusCard(title: String, body: String, icon: ImageVector) {
-    Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
-        shape = MaterialTheme.shapes.extraLarge,
-    ) {
-        Box(Modifier.fillMaxWidth()) {
-            FlowerCanvas(
-                modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .size(150.dp),
-                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
-            )
-            Row(
-                modifier = Modifier.padding(MdSpacing.md),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(MdSpacing.sm),
-            ) {
-                Surface(modifier = Modifier.size(52.dp), shape = CircleShape, color = MaterialTheme.colorScheme.primary) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimary)
-                    }
-                }
-                Column(Modifier.weight(1f)) {
-                    Text(title, style = MaterialTheme.typography.headlineSmall)
-                    Text(body, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onPrimaryContainer)
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun FlowerBadge(count: Int) {
-    Box(contentAlignment = Alignment.Center, modifier = Modifier.size(56.dp)) {
-        FlowerCanvas(Modifier.fillMaxSize(), MaterialTheme.colorScheme.secondaryContainer)
-        Text(count.toString(), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-    }
-}
-
-@Composable
-private fun FlowerCanvas(modifier: Modifier, color: Color) {
-    Canvas(modifier) {
-        val center = Offset(size.width / 2f, size.height / 2f)
-        val radius = size.minDimension / 4f
-        repeat(8) { index ->
-            val angle = (Math.PI * 2.0 * index / 8.0).toFloat()
-            drawCircle(
-                color = color,
-                radius = radius,
-                center = Offset(
-                    center.x + cos(angle) * radius,
-                    center.y + sin(angle) * radius,
-                ),
-            )
-        }
-        drawCircle(color = color, radius = radius * 1.15f, center = center)
-    }
-}
-
-@Composable
-private fun TopAppIcons(apps: List<String>, modifier: Modifier = Modifier) {
-    if (apps.isEmpty()) return
-    Row(
-        modifier = modifier,
-        horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text("Top apps", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        apps.forEach { app ->
-            AssistChip(onClick = {}, label = { Text(app, maxLines = 1, overflow = TextOverflow.Ellipsis) })
-        }
-    }
-}
-
-@Composable
-private fun SectionCard(title: String, content: @Composable ColumnScope.() -> Unit) {
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow), shape = MaterialTheme.shapes.medium) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(MdSpacing.sm),
-            verticalArrangement = Arrangement.spacedBy(MdSpacing.xs),
-        ) {
-            Text(title, style = MaterialTheme.typography.titleMedium)
-            content()
         }
     }
 }
