@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -62,8 +63,8 @@ import androidx.compose.material.icons.outlined.Apps
 import androidx.compose.material.icons.outlined.Inbox
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
@@ -151,8 +152,10 @@ import androidx.navigation.compose.rememberNavController
 import com.tide.app.core.DeliveryTimeSuggester
 import com.tide.app.core.InboxLayout
 import com.tide.app.core.ManualOpen
+import com.tide.app.core.NotificationGrouping
 import com.tide.app.core.OpenHoursCalculator
 import com.tide.app.core.ScheduleCalculator
+import com.tide.app.core.SwipeDismissPolicy
 import com.tide.app.data.AppRuleUi
 import com.tide.app.data.AppSettings
 import com.tide.app.data.ChannelRuleUi
@@ -164,7 +167,8 @@ import com.tide.app.data.NotificationEntity
 import com.tide.app.data.Repository
 import com.tide.app.data.ScheduleRuleEntity
 import com.tide.app.data.ThemeMode
-import com.tide.app.notifications.PendingIntentRegistry
+import com.tide.app.notifications.NotificationOpener
+import com.tide.app.notifications.ReleasedNotificationPlan
 import com.tide.app.ui.AppIcon
 import com.tide.app.ui.AppSelectionPane
 import com.tide.app.ui.TideActionCard
@@ -378,6 +382,14 @@ class MainViewModel(
 
     fun unarchiveNotifications(keys: List<String>) {
         viewModelScope.launch { repository.unarchiveNotifications(keys) }
+    }
+
+    fun dismissNotifications(items: List<NotificationEntity>) {
+        viewModelScope.launch { repository.dismissNotifications(items.map { it.notificationKey }) }
+    }
+
+    fun restoreNotifications(items: List<NotificationEntity>) {
+        viewModelScope.launch { repository.restoreNotifications(items) }
     }
 
     fun setShowSystemApps(enabled: Boolean) {
@@ -621,7 +633,8 @@ private fun TideRoot(
                                     snackbarHostState = snackbarHostState,
                                     requestedBatchExpansion = requestedBatchExpansion,
                                     onBatchExpansionConsumed = { requestedBatchExpansion = null },
-                                    onArchiveNotifications = viewModel::archiveNotifications,
+                                    onDismissNotifications = viewModel::dismissNotifications,
+                                    onRestoreNotifications = viewModel::restoreNotifications,
                                     onUnarchiveNotifications = viewModel::unarchiveNotifications,
                                     onDeliverNow = viewModel::deliverNotificationsNow,
                                 )
@@ -786,24 +799,12 @@ private data class NotificationGroup(
     val items: List<NotificationEntity>,
 ) {
     val primary: NotificationEntity = items.maxBy { it.postedAtMillis }
-    val count: Int = items.size
     val notificationKeys: List<String> = items.map { it.notificationKey }
-    // A row's persistent UI state must follow the exact notifications it represents.
-    // `key` describes a logical group (app/title/channel), so it remains the same when
-    // a new notification joins that group. This identity is used for Compose item keys
-    // to avoid transferring a dismissed swipe state to the updated row.
+    // A row is exactly one captured notification. Compose keys follow the
+    // notification key so a dismissed swipe state cannot transfer to another row.
     val rowKey: String = notificationKeys.sorted().joinToString(separator = "\n")
     val title: String? = primary.title
-    val text: String? = items
-        .sortedByDescending { it.postedAtMillis }
-        .mapNotNull { it.text?.takeIf(String::isNotBlank) }
-        .take(3)
-        .joinToString(" • ")
-        .ifBlank { null }
-}
-
-private fun InboxBatch.notificationKeys(): List<String> {
-    return notifications.map { it.notificationKey }
+    val text: String? = primary.text?.takeIf(String::isNotBlank)
 }
 
 @Composable
@@ -817,7 +818,8 @@ private fun NotificationsScreen(
     snackbarHostState: SnackbarHostState,
     requestedBatchExpansion: String?,
     onBatchExpansionConsumed: () -> Unit,
-    onArchiveNotifications: (List<String>) -> Unit,
+    onDismissNotifications: (List<NotificationEntity>) -> Unit,
+    onRestoreNotifications: (List<NotificationEntity>) -> Unit,
     onUnarchiveNotifications: (List<String>) -> Unit,
     onDeliverNow: (List<String>) -> Unit,
 ) {
@@ -862,16 +864,16 @@ private fun NotificationsScreen(
         }
     }
     val dropGroups = remember(sections.drop) {
-        digestNotifications(sections.drop?.notifications.orEmpty())
+        groupNotifications(sections.drop?.notifications.orEmpty())
     }
     val heldGroups = remember(sections.held) { groupNotifications(sections.held) }
     val olderGroups = remember(sections.older) { groupNotifications(sections.older) }
 
-    fun archiveWithUndo(keys: List<String>, message: String) {
-        onArchiveNotifications(keys)
+    fun dismissWithUndo(items: List<NotificationEntity>) {
+        onDismissNotifications(items)
         scope.launch {
-            val result = snackbarHostState.showSnackbar(message, "Undo")
-            if (result.name == "ActionPerformed") onUnarchiveNotifications(keys)
+            val result = snackbarHostState.showSnackbar("Notification dismissed", "Undo")
+            if (result.name == "ActionPerformed") onRestoreNotifications(items)
         }
     }
 
@@ -927,7 +929,7 @@ private fun NotificationsScreen(
                         ),
                         group = group,
                         archiveLabel = "Dismiss",
-                        onArchive = { archiveWithUndo(group.notificationKeys, "Notification dismissed") },
+                        onArchive = { dismissWithUndo(group.items) },
                         onDeliverNow = if (sections.dropUpcoming) {
                             { onDeliverNow(group.notificationKeys) }
                         } else {
@@ -959,7 +961,7 @@ private fun NotificationsScreen(
                     ),
                     group = group,
                     archiveLabel = "Dismiss",
-                    onArchive = { archiveWithUndo(group.notificationKeys, "Notification dismissed") },
+                    onArchive = { dismissWithUndo(group.items) },
                     onDeliverNow = { onDeliverNow(group.notificationKeys) },
                 )
             }
@@ -982,7 +984,7 @@ private fun NotificationsScreen(
                     archiveLabel = if (archived) "Restore" else "Dismiss",
                     onArchive = {
                         if (archived) onUnarchiveNotifications(group.notificationKeys)
-                        else archiveWithUndo(group.notificationKeys, "Notification dismissed")
+                        else dismissWithUndo(group.items)
                     },
                 )
             }
@@ -1040,13 +1042,11 @@ private fun NotificationRowContent(
         SwipeableNotificationRow(
             modifier = modifier,
             onDismiss = onArchive,
-            onDeliverNow = onDeliverNow,
         ) {
             NotificationCard(
                 modifier = Modifier,
                 group = group,
                 archiveLabel = archiveLabel,
-                swipeEnabled = true,
                 onArchive = onArchive,
                 onDeliverNow = onDeliverNow,
             )
@@ -1056,7 +1056,6 @@ private fun NotificationRowContent(
             modifier = modifier,
             group = group,
             archiveLabel = archiveLabel,
-            swipeEnabled = false,
             onArchive = onArchive,
             onDeliverNow = null,
         )
@@ -1064,10 +1063,7 @@ private fun NotificationRowContent(
 }
 
 /** How far a row must travel, as a fraction of its width, before the release commits. */
-private const val SwipeArchiveThreshold = 0.32f
-
-/** A fling past this speed (px/s) commits even from a short drag. */
-private const val SwipeArchiveVelocity = 1200f
+private const val SwipeArchiveThreshold = SwipeDismissPolicy.THRESHOLD
 
 /** Release below the threshold: a soft glide home that keeps a trace of the fling. */
 private val SwipeReturnSpec = spring<Float>(dampingRatio = 0.8f, stiffness = 200f)
@@ -1076,13 +1072,12 @@ private val SwipeReturnSpec = spring<Float>(dampingRatio = 0.8f, stiffness = 200
 private val SwipeExitSpec = spring<Float>(dampingRatio = 1f, stiffness = 160f)
 
 /**
- * Android-shade swipe: left dismisses, right delivers now when that action exists.
+ * Android-shade swipe: left and right both dismiss. Deliver now is a separate button.
  */
 @Composable
 private fun SwipeableNotificationRow(
     modifier: Modifier = Modifier,
     onDismiss: () -> Unit,
-    onDeliverNow: (() -> Unit)?,
     content: @Composable () -> Unit,
 ) {
     val hapticFeedback = LocalHapticFeedback.current
@@ -1096,7 +1091,7 @@ private fun SwipeableNotificationRow(
     val progress = if (width > 0f) (offsetX.value / width).coerceIn(-1f, 1f) else 0f
     val exitFade = if (settling) 1f - ((kotlin.math.abs(progress) - 0.7f) / 0.25f).coerceIn(0f, 1f) else 1f
     val minOffset = -width
-    val maxOffset = if (onDeliverNow != null && width > 0f) width else 0f
+    val maxOffset = width
 
     Box(
         modifier = modifier
@@ -1119,23 +1114,18 @@ private fun SwipeableNotificationRow(
                 onDragStarted = { dragTarget = offsetX.value },
                 onDragStopped = { velocity ->
                     val fraction = if (width > 0f) dragTarget / width else 0f
-                    val dismissFling = velocity < -SwipeArchiveVelocity && fraction < -0.1f
-                    val deliverFling = onDeliverNow != null && velocity > SwipeArchiveVelocity && fraction > 0.1f
-                    val dismiss = fraction <= -SwipeArchiveThreshold || dismissFling
-                    val deliver = onDeliverNow != null && (fraction >= SwipeArchiveThreshold || deliverFling)
-                    if (width > 0f && (dismiss || deliver)) {
+                    if (width > 0f && SwipeDismissPolicy.shouldDismiss(fraction, velocity)) {
                         settling = true
                         hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
-                        val target = if (dismiss) -width else width
-                        val action = if (dismiss) onDismiss else onDeliverNow
+                        val target = SwipeDismissPolicy.exitTarget(fraction, width)
                         var handedOff = false
                         offsetX.animateTo(target, SwipeExitSpec, initialVelocity = velocity) {
                             if (!handedOff && kotlin.math.abs(value) >= width * 0.95f) {
                                 handedOff = true
-                                action?.invoke()
+                                onDismiss()
                             }
                         }
-                        if (!handedOff) action?.invoke()
+                        if (!handedOff) onDismiss()
                     } else {
                         pastThreshold = false
                         offsetX.animateTo(0f, SwipeReturnSpec, initialVelocity = velocity)
@@ -1147,12 +1137,7 @@ private fun SwipeableNotificationRow(
             modifier = Modifier
                 .matchParentSize()
                 .clip(MaterialTheme.shapes.medium)
-                .background(
-                    when {
-                        offsetX.value > 0f -> MaterialTheme.colorScheme.primaryContainer
-                        else -> MaterialTheme.colorScheme.tertiaryContainer
-                    },
-                )
+                .background(MaterialTheme.colorScheme.tertiaryContainer)
                 .padding(horizontal = MdSpacing.sm),
             contentAlignment = if (offsetX.value > 0f) Alignment.CenterStart else Alignment.CenterEnd,
         ) {
@@ -1166,27 +1151,27 @@ private fun SwipeableNotificationRow(
                     scaleY = 0.8f + 0.2f * reveal
                 },
             ) {
-                if (offsetX.value > 0f) {
-                    Icon(
-                        Icons.Filled.NotificationsActive,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                    )
-                    Text(
-                        "Deliver now",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                    )
-                } else {
+                if (offsetX.value <= 0f) {
                     Text(
                         "Dismiss",
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.onTertiaryContainer,
                     )
                     Icon(
-                        Icons.Filled.Archive,
+                        Icons.Filled.Close,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                    )
+                } else {
+                    Icon(
+                        Icons.Filled.Close,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                    )
+                    Text(
+                        "Dismiss",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer,
                     )
                 }
             }
@@ -1202,7 +1187,6 @@ private fun NotificationCard(
     modifier: Modifier,
     group: NotificationGroup,
     archiveLabel: String,
-    swipeEnabled: Boolean,
     onArchive: () -> Unit,
     onDeliverNow: (() -> Unit)? = null,
 ) {
@@ -1254,7 +1238,7 @@ private fun NotificationCard(
                         Text(item.appLabel, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     Text(
-                        group.title?.let { if (group.count > 1) "$it (${group.count})" else it } ?: "Notification",
+                        group.title ?: "Notification",
                         style = MaterialTheme.typography.bodyLarge,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -1274,14 +1258,21 @@ private fun NotificationCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                if (!swipeEnabled) {
-                    IconButton(onClick = onArchive) {
+                if (onDeliverNow != null) {
+                    IconButton(onClick = onDeliverNow) {
                         Icon(
-                            Icons.Filled.Restore,
-                            contentDescription = archiveLabel,
+                            Icons.Filled.NotificationsActive,
+                            contentDescription = "Deliver now",
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                }
+                IconButton(onClick = onArchive) {
+                    Icon(
+                        if (archiveLabel == "Restore") Icons.Filled.Restore else Icons.Filled.Close,
+                        contentDescription = archiveLabel,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
         }
@@ -1289,9 +1280,22 @@ private fun NotificationCard(
 }
 
 private fun openOriginalNotification(context: Context, item: NotificationEntity) {
-    val opened = PendingIntentRegistry.send(item.notificationKey)
-    if (!opened) {
-        context.packageManager.getLaunchIntentForPackage(item.packageName)?.let(context::startActivity)
+    when (val result = NotificationOpener.open(context, item.notificationKey, item.packageName, item.appLabel)) {
+        NotificationOpener.OpenResult.SentOriginal -> Unit
+        is NotificationOpener.OpenResult.OpenedApp -> {
+            Toast.makeText(
+                context,
+                ReleasedNotificationPlan.fallbackMessage(true, result.appLabel),
+                Toast.LENGTH_SHORT,
+            ).show()
+        }
+        NotificationOpener.OpenResult.Unavailable -> {
+            Toast.makeText(
+                context,
+                ReleasedNotificationPlan.fallbackMessage(false, item.appLabel),
+                Toast.LENGTH_SHORT,
+            ).show()
+        }
     }
 }
 
@@ -2638,41 +2642,13 @@ private fun NotificationGroup.matches(query: String): Boolean {
     return items.any { it.matches(query) }
 }
 
-private fun digestNotifications(items: List<NotificationEntity>): List<NotificationGroup> {
-    return items
-        .groupBy { it.packageName }
-        .values
-        .map { groupedItems ->
-            NotificationGroup(
-                key = "digest_${groupedItems.first().packageName}",
-                items = groupedItems.sortedByDescending { it.postedAtMillis },
-            )
-        }
-        .sortedByDescending { it.primary.postedAtMillis }
-}
-
 private fun groupNotifications(items: List<NotificationEntity>): List<NotificationGroup> {
-    return items
-        .groupBy { it.groupKey() }
-        .values
-        .map { groupedItems ->
-            NotificationGroup(
-                key = groupedItems.first().groupKey(),
-                items = groupedItems.sortedByDescending { it.postedAtMillis },
-            )
-        }
-        .sortedByDescending { it.primary.postedAtMillis }
-}
-
-private fun NotificationEntity.groupKey(): String {
-    return listOf(
-        batchId.orEmpty(),
-        packageName,
-        channelId.orEmpty(),
-        title?.trim()?.lowercase().orEmpty(),
-        deliveryMode.name,
-        isArchived.toString(),
-    ).joinToString("\n")
+    return NotificationGrouping.rows(items).map { item ->
+        NotificationGroup(
+            key = NotificationGrouping.rowKey(item),
+            items = listOf(item),
+        )
+    }
 }
 
 private fun DeliveryMode.label(): String {

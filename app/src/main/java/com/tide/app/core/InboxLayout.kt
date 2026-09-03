@@ -14,9 +14,9 @@ data class InboxSections(
 /**
  * Splits captured notifications into Tide drop, Held, and Older.
  *
- * Tide drop is the next scheduled digest, or the digest that just released if
+ * Tide drop is the next scheduled delivery, or the batch that just released if
  * nothing is queued yet. Held is everything else still waiting (later drops,
- * unbatched). Older is delivered Instant history plus past drops and dismissals.
+ * unbatched). Older is delivered Instant history plus past drops.
  * The three lists never share a notification.
  */
 object InboxLayout {
