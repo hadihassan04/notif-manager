@@ -101,6 +101,7 @@ class AppSettings(private val context: Context) {
     suspend fun setPauseBatching(paused: Boolean) {
         context.settingsDataStore.edit { prefs ->
             prefs[PAUSE_BATCHING] = paused
+            if (paused) prefs[TEMPORARY_OPEN_UNTIL_MILLIS] = 0L
         }
     }
 

@@ -4,7 +4,13 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
+import com.tide.app.core.AppClassifier
+import com.tide.app.core.AppRole
+import com.tide.app.core.AppSelectionGroup
+import com.tide.app.core.AppSignals
+import com.tide.app.core.InboxLayout
 import com.tide.app.core.IncomingNotification
 import com.tide.app.core.Insights
 import com.tide.app.core.InsightsCalculator
@@ -33,6 +39,7 @@ data class InstalledApp(
     val isRecommendedHeavyApp: Boolean,
     val isRecommendedInstantApp: Boolean = false,
     val isMediaPlayer: Boolean = false,
+    val role: AppRole = AppRole.OTHER,
 )
 
 data class InboxBatch(
@@ -69,6 +76,7 @@ private data class AppCatalogEntry(
     val isRecommendedHeavyApp: Boolean,
     val isRecommendedInstantApp: Boolean,
     val isMediaPlayer: Boolean,
+    val role: AppRole,
 )
 
 class Repository(
@@ -136,7 +144,8 @@ class Repository(
         normalizeNonBatchableDefaults()
         normalizeMediaPlayerDefaults()
         val schedules = dao.schedules()
-        val instantOverride = settings.temporaryOpenUntilMillis.first() > incoming.postedAtMillis ||
+        val instantOverride = settings.pauseBatching.first() ||
+            settings.temporaryOpenUntilMillis.first() > incoming.postedAtMillis ||
             openHoursCalculator.isOpenAt(incoming.postedAtMillis, dao.instantWindows())
         val decision = if (instantOverride) {
             null
@@ -210,24 +219,21 @@ class Repository(
     }
 
     /**
-     * Bulk mode change from the app list. Players are skipped when the target is batch:
-     * cancelling a playback notification would stop the audio, so that one move is not
-     * theirs to make.
+     * Bulk mode change from the app list. Media apps can be turned off Instant;
+     * playback notifications still skip the hold via the capture filter.
      */
     suspend fun setAppModes(apps: List<InstalledApp>, mode: DeliveryMode) {
         val now = System.currentTimeMillis()
-        apps
-            .filter { mode == DeliveryMode.INSTANT || !it.isMediaPlayer }
-            .forEach { app ->
-                dao.upsertAppRule(
-                    AppRuleEntity(
-                        packageName = app.packageName,
-                        appLabel = app.label,
-                        deliveryMode = mode,
-                        updatedAtMillis = now,
-                    ),
-                )
-            }
+        apps.forEach { app ->
+            dao.upsertAppRule(
+                AppRuleEntity(
+                    packageName = app.packageName,
+                    appLabel = app.label,
+                    deliveryMode = mode,
+                    updatedAtMillis = now,
+                ),
+            )
+        }
     }
 
     suspend fun bulkSetInstant(apps: List<InstalledApp>) {
@@ -250,9 +256,7 @@ class Repository(
                 AppRuleEntity(
                     packageName = app.packageName,
                     appLabel = app.label,
-                    // Batching a player would cancel its playback controls, so the
-                    // selection cannot turn one off.
-                    deliveryMode = if (app.packageName in priorityPackages || app.isMediaPlayer) {
+                    deliveryMode = if (app.packageName in priorityPackages) {
                         DeliveryMode.INSTANT
                     } else {
                         DeliveryMode.BATCH
@@ -263,12 +267,16 @@ class Repository(
         }
     }
 
-    suspend fun addSchedule() {
+    suspend fun addSchedule(
+        releaseMinutes: Int,
+        activeDaysMask: Int = ScheduleRuleEntity.ALL_DAYS_MASK,
+    ) {
         dao.upsertSchedule(
             ScheduleRuleEntity(
                 name = "",
                 holdStartMinutes = 7 * 60,
-                releaseMinutes = 12 * 60,
+                releaseMinutes = releaseMinutes.coerceIn(0, 23 * 60 + 55),
+                activeDaysMask = activeDaysMask,
                 updatedAtMillis = System.currentTimeMillis(),
             )
         )
@@ -319,7 +327,13 @@ class Repository(
         releaseWaitingNow()
     }
 
+    suspend fun startIndefiniteOpen() {
+        settings.setPauseBatching(true)
+        releaseWaitingNow()
+    }
+
     suspend fun endTemporaryOpen() {
+        settings.setPauseBatching(false)
         settings.setTemporaryOpenUntilMillis(0L)
     }
 
@@ -342,12 +356,12 @@ class Repository(
     }
 
     suspend fun archiveBatch(batchId: String) {
-        val keys = if (batchId == UNBATCHED_BATCH_ID) {
+        val keys = if (batchId == InboxLayout.UNBATCHED_BATCH_ID) {
             dao.notificationsForUnbatchedBatch().map { it.notificationKey }
         } else {
             dao.notificationsForBatch(batchId).map { it.notificationKey }
         }
-        if (batchId == UNBATCHED_BATCH_ID) {
+        if (batchId == InboxLayout.UNBATCHED_BATCH_ID) {
             dao.archiveUnbatchedBatch()
         } else {
             dao.archiveBatch(batchId)
@@ -356,7 +370,7 @@ class Repository(
     }
 
     suspend fun unarchiveBatch(batchId: String) {
-        if (batchId == UNBATCHED_BATCH_ID) {
+        if (batchId == InboxLayout.UNBATCHED_BATCH_ID) {
             dao.unarchiveUnbatchedBatch()
         } else {
             dao.unarchiveBatch(batchId)
@@ -377,9 +391,6 @@ class Repository(
 
     suspend fun initialize() {
         ensureSchedules()
-        if (settings.pauseBatching.first()) {
-            settings.setTemporaryOpenUntilMillis(System.currentTimeMillis() + 60L * 60L * 1000L)
-        }
         normalizeNonBatchableDefaults()
         reschedule()
     }
@@ -428,6 +439,19 @@ class Repository(
         }
         if (waiting.isEmpty()) return 0
         val releaseBatchId = openReleaseBatchId(nowMillis)
+        dao.moveNotificationsToBatch(waiting.map { it.notificationKey }, releaseBatchId)
+        NotificationPublisher(context).showDigest(releaseBatchId, waiting)
+        return waiting.size
+    }
+
+    suspend fun deliverNotificationsNow(keys: List<String>): Int {
+        if (keys.isEmpty()) return 0
+        val now = System.currentTimeMillis()
+        val waiting = keys.mapNotNull { dao.notificationByKey(it) }.filter { notification ->
+            !notification.isArchived && notification.deliveryMode == DeliveryMode.BATCH
+        }
+        if (waiting.isEmpty()) return 0
+        val releaseBatchId = openReleaseBatchId(now)
         dao.moveNotificationsToBatch(waiting.map { it.notificationKey }, releaseBatchId)
         NotificationPublisher(context).showDigest(releaseBatchId, waiting)
         return waiting.size
@@ -502,12 +526,17 @@ class Repository(
                 InstalledApp(
                     packageName = entry.packageName,
                     label = rule?.appLabel ?: summary?.appLabel ?: entry.label,
-                    mode = rule?.deliveryMode ?: defaultDeliveryMode(entry.isSystemApp, entry.hasLauncherActivity),
+                    mode = rule?.deliveryMode ?: AppClassifier.defaultDeliveryMode(
+                        entry.role,
+                        entry.isSystemApp,
+                        entry.hasLauncherActivity,
+                    ),
                     isSystemApp = entry.isSystemApp,
                     notificationCount = summary?.notificationCount ?: 0,
                     isRecommendedHeavyApp = entry.isRecommendedHeavyApp,
                     isRecommendedInstantApp = entry.isRecommendedInstantApp,
                     isMediaPlayer = entry.isMediaPlayer,
+                    role = entry.role,
                 )
             }
             .plus(
@@ -519,11 +548,18 @@ class Repository(
                             packageName = packageName,
                             label = summary.appLabel,
                             mode = ruleMap[packageName]?.deliveryMode
-                                ?: defaultDeliveryMode(profile.isSystemApp, profile.hasLauncherActivity),
+                                ?: AppClassifier.defaultDeliveryMode(
+                                    profile.role,
+                                    profile.isSystemApp,
+                                    profile.hasLauncherActivity,
+                                ),
                             isSystemApp = profile.isSystemApp,
                             notificationCount = summary.notificationCount,
-                            isRecommendedHeavyApp = false,
-                            isMediaPlayer = NotificationCaptureFilter.isMediaPlayerPackage(packageName),
+                            isRecommendedHeavyApp = profile.role.selectionGroup == AppSelectionGroup.EVERYTHING_ELSE &&
+                                profile.role != AppRole.OTHER,
+                            isRecommendedInstantApp = profile.role.selectionGroup == AppSelectionGroup.TIME_SENSITIVE,
+                            isMediaPlayer = profile.isMediaPlayer,
+                            role = profile.role,
                         )
                     },
             )
@@ -545,6 +581,12 @@ class Repository(
 
     private fun loadAppCatalog(): List<AppCatalogEntry> {
         val pm = context.packageManager
+        val smsPackages = packagesHandling(Intent(Intent.ACTION_SENDTO).setData(Uri.parse("smsto:"))) +
+            packagesHandling(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_APP_MESSAGING))
+        val emailPackages = packagesHandling(Intent(Intent.ACTION_SENDTO).setData(Uri.parse("mailto:"))) +
+            packagesHandling(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_APP_EMAIL))
+        val dialPackages = packagesHandling(Intent(Intent.ACTION_DIAL))
+        val calendarPackages = packagesHandling(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_APP_CALENDAR))
         val launcherIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
         val launcherApps = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             pm.queryIntentActivities(launcherIntent, PackageManager.ResolveInfoFlags.of(0))
@@ -555,18 +597,44 @@ class Repository(
         return launcherApps
             .mapNotNull { it.activityInfo?.applicationInfo }
             .distinctBy { it.packageName }
-            .map {
-                val label = it.loadLabel(pm).toString()
+            .map { info ->
+                val label = info.loadLabel(pm).toString()
+                val isMediaPlayer = NotificationCaptureFilter.isMediaPlayerPackage(info.packageName)
+                val role = AppClassifier.classify(
+                    AppSignals(
+                        packageName = info.packageName,
+                        label = label,
+                        isMediaPlayer = isMediaPlayer,
+                        androidCategory = info.category,
+                        handlesSms = info.packageName in smsPackages,
+                        handlesEmail = info.packageName in emailPackages,
+                        handlesDial = info.packageName in dialPackages,
+                        handlesCalendar = info.packageName in calendarPackages,
+                    ),
+                )
                 AppCatalogEntry(
-                    packageName = it.packageName,
+                    packageName = info.packageName,
                     label = label,
-                    isSystemApp = it.isSystemApp(),
+                    isSystemApp = info.isSystemApp(),
                     hasLauncherActivity = true,
-                    isRecommendedHeavyApp = isRecommendedHeavyApp(it.packageName, label),
-                    isRecommendedInstantApp = isRecommendedInstantApp(it.packageName, label),
-                    isMediaPlayer = NotificationCaptureFilter.isMediaPlayerPackage(it.packageName),
+                    isRecommendedHeavyApp = role.selectionGroup == AppSelectionGroup.EVERYTHING_ELSE &&
+                        role != AppRole.OTHER,
+                    isRecommendedInstantApp = role.selectionGroup == AppSelectionGroup.TIME_SENSITIVE,
+                    isMediaPlayer = isMediaPlayer || role == AppRole.MEDIA,
+                    role = role,
                 )
             }
+    }
+
+    private fun packagesHandling(intent: Intent): Set<String> {
+        val pm = context.packageManager
+        val resolved = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            pm.queryIntentActivities(intent, PackageManager.ResolveInfoFlags.of(0))
+        } else {
+            @Suppress("DEPRECATION")
+            pm.queryIntentActivities(intent, 0)
+        }
+        return resolved.mapNotNull { it.activityInfo?.packageName }.toSet()
     }
 
     private fun buildInboxBatches(
@@ -575,7 +643,7 @@ class Repository(
     ): List<InboxBatch> {
         return notifications
             .filter { it.deliveryMode == DeliveryMode.BATCH }
-            .groupBy { it.batchId ?: UNBATCHED_BATCH_ID }
+            .groupBy { it.batchId ?: InboxLayout.UNBATCHED_BATCH_ID }
             .map { (batchId, items) -> buildBatch(batchId, items) }
             .sortedByDescending { it.newestAtMillis }
     }
@@ -598,7 +666,7 @@ class Repository(
         return InboxBatch(
             batchId = batchId,
             title = when {
-                batchId == UNBATCHED_BATCH_ID -> "Unbatched"
+                batchId == InboxLayout.UNBATCHED_BATCH_ID -> "Unbatched"
                 releaseMinutes != null -> "${formatMinutes(releaseMinutes)} delivery"
                 else -> "Delivery"
             },
@@ -632,32 +700,6 @@ class Repository(
         return flags and ApplicationInfo.FLAG_SYSTEM != 0 || flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP != 0
     }
 
-    private fun defaultDeliveryMode(isSystemApp: Boolean, hasLauncherActivity: Boolean): DeliveryMode {
-        return if (!isSystemApp && hasLauncherActivity) DeliveryMode.BATCH else DeliveryMode.INSTANT
-    }
-
-    private fun isRecommendedHeavyApp(packageName: String, label: String): Boolean {
-        return matchesHint(packageName, label, RECOMMENDED_HEAVY_APP_HINTS)
-    }
-
-    private fun isRecommendedInstantApp(packageName: String, label: String): Boolean {
-        return matchesHint(packageName, label, RECOMMENDED_INSTANT_HINTS)
-    }
-
-    /**
-     * A hint matches the start of a word in the package name or the label, not any
-     * substring of it: "ally" should recognise Ally Bank without also claiming
-     * "com.rallyhealth". Hints written as package fragments (anything with a dot)
-     * are matched against the whole package name instead.
-     */
-    private fun matchesHint(packageName: String, label: String, hints: List<String>): Boolean {
-        val haystack = (packageName + " " + label).lowercase()
-        val words = haystack.split(NON_WORD_REGEX).filter { it.isNotBlank() }
-        return hints.any { hint ->
-            if (hint.contains('.')) haystack.contains(hint) else words.any { it.startsWith(hint) }
-        }
-    }
-
     private fun formatMinutes(minutes: Int): String {
         val hour = minutes / 60
         val minute = minutes % 60
@@ -670,7 +712,7 @@ class Repository(
     }
 
     private fun batchReleaseAtMillis(batchId: String): Long {
-        if (batchId == UNBATCHED_BATCH_ID) return 0L
+        if (batchId == InboxLayout.UNBATCHED_BATCH_ID) return 0L
         val date = runCatching { LocalDate.parse(batchId.substringBefore("-batch-")) }.getOrNull() ?: return 0L
         val releaseMinutes = batchId.substringAfterLast("-", missingDelimiterValue = "").toIntOrNull() ?: return 0L
         if (releaseMinutes !in 0 until 24 * 60) return 0L
@@ -688,63 +730,6 @@ class Repository(
     }
 
     companion object {
-        const val UNBATCHED_BATCH_ID = "unbatched"
         private const val RECENT_HISTORY_LIMIT = 600
-
-        private val NON_WORD_REGEX = Regex("""[^a-z0-9]+""")
-
-        private val RECOMMENDED_HEAVY_APP_HINTS = listOf(
-            "instagram",
-            "facebook",
-            "linkedin",
-            "gmail",
-            "whatsapp",
-            "telegram",
-            "messenger",
-            "slack",
-            "discord",
-            "twitter",
-            "x.android",
-            "snapchat",
-            "tiktok",
-            "reddit",
-            "outlook",
-        )
-
-        /**
-         * What onboarding recommends letting through: the things whose worth depends
-         * on arriving now — someone reaching you, money moving, a door being opened,
-         * a ride or a delivery on its way, a reminder for a fixed time. Anything a
-         * bank or a person sends qualifies; feeds and offers do not.
-         *
-         * Media players are absent on purpose. They are not recommended, they are
-         * forced instant (`isMediaPlayer`), because batching one stops its audio.
-         * Authenticators are absent too: a code is read in the app that asked for it.
-         */
-        private val RECOMMENDED_INSTANT_HINTS = listOf(
-            // Calls and messages
-            "com.android.phone", "com.android.dialer", "com.google.android.dialer",
-            "com.android.mms", "com.google.android.apps.messaging", "com.samsung.android.messaging",
-            "phone", "dialer", "messaging", "messages", "sms", "mms",
-            "whatsapp", "com.whatsapp.w4b", "signal", "telegram", "messenger",
-            // Email
-            "mail", "email", "gmail", "outlook", "yahoo", "proton", "fastmail",
-            // Banks, cards and payments
-            "bank", "banking", "chase", "wellsfargo", "citi", "citibank", "amex",
-            "americanexpress", "bofa", "bankofamerica", "capitalone", "discover",
-            "usbank", "pnc", "truist", "ally", "sofi", "schwab", "fidelity",
-            "hsbc", "barclays", "lloyds", "natwest", "santander", "halifax", "monzo",
-            "starling", "revolut", "n26", "wise", "curve", "creditunion", "cu",
-            "paypal", "venmo", "cashapp", "zelle", "wallet", "klarna", "visa",
-            "mastercard", "coinbase",
-            // Navigation, rides and deliveries
-            "maps", "waze", "navigation", "uber", "lyft", "bolt", "grab", "careem",
-            "doordash", "grubhub", "ubereats", "postmates", "deliveroo", "justeat",
-            "instacart", "fedex", "ups", "dhl", "usps", "royalmail",
-            // Fixed times
-            "calendar", "alarm", "clock", "reminders",
-            // Home and safety
-            "nest", "ring", "arlo", "adt", "simplisafe", "hue",
-        )
     }
 }

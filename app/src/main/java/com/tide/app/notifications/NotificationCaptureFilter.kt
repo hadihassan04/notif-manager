@@ -6,13 +6,17 @@ import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.os.Build
 import android.service.notification.StatusBarNotification
+import com.tide.app.core.AppClassifier
+import com.tide.app.core.AppRole
+import com.tide.app.core.AppSignals
 
 data class CapturedAppProfile(
     val isSystemApp: Boolean,
     val hasLauncherActivity: Boolean,
     val isMediaPlayer: Boolean = false,
+    val role: AppRole = AppRole.OTHER,
 ) {
-    val batchesByDefault: Boolean = !isSystemApp && hasLauncherActivity && !isMediaPlayer
+    val batchesByDefault: Boolean = !isSystemApp && hasLauncherActivity && !role.defaultsToInstant
 }
 
 object NotificationCaptureFilter {
@@ -25,10 +29,22 @@ object NotificationCaptureFilter {
                 packageManager.getApplicationInfo(packageName, 0)
             }
         }.getOrNull()
+        val isMediaPlayer = isMediaPlayerPackage(packageName)
+        val label = appInfo?.loadLabel(packageManager)?.toString().orEmpty()
+        val androidCategory = appInfo?.category ?: AppClassifier.CATEGORY_UNDEFINED
+        val role = AppClassifier.classify(
+            AppSignals(
+                packageName = packageName,
+                label = label,
+                isMediaPlayer = isMediaPlayer,
+                androidCategory = androidCategory,
+            ),
+        )
         return CapturedAppProfile(
             isSystemApp = appInfo?.isSystemApp() ?: true,
             hasLauncherActivity = packageManager.getLaunchIntentForPackage(packageName) != null,
-            isMediaPlayer = isMediaPlayerPackage(packageName),
+            isMediaPlayer = isMediaPlayer || role == AppRole.MEDIA,
+            role = role,
         )
     }
 
