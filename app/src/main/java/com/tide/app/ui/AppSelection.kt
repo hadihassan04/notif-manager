@@ -1,6 +1,6 @@
 package com.tide.app.ui
 
-import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.border
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -18,13 +18,11 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -168,16 +166,6 @@ fun AppSelectionTile(
     onLongClick: (() -> Unit)?,
 ) {
     val status = if (instant) "Instant" else "Waiting"
-    val ring = if (instant) {
-        MaterialTheme.colorScheme.primary
-    } else {
-        MaterialTheme.colorScheme.outline
-    }
-    val well = if (instant) {
-        MaterialTheme.colorScheme.primaryContainer
-    } else {
-        MaterialTheme.colorScheme.surfaceContainerHighest
-    }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -194,36 +182,18 @@ fun AppSelectionTile(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Box(contentAlignment = Alignment.Center) {
-            Surface(
-                modifier = Modifier.size(60.dp),
-                shape = CircleShape,
-                color = well,
-                border = BorderStroke(if (instant) 2.5.dp else 1.5.dp, ring),
-            ) {
-                AppIcon(
-                    packageName = app.packageName,
-                    label = app.label,
-                    modifier = Modifier
-                        .padding(5.dp)
-                        .fillMaxSize(),
-                )
-            }
+        Box(modifier = Modifier.size(56.dp)) {
+            AppIcon(
+                packageName = app.packageName,
+                label = app.label,
+                modifier = Modifier.fillMaxSize(),
+            )
             if (instant) {
-                Surface(
+                Box(
                     modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .size(18.dp),
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.primary,
-                ) {
-                    Icon(
-                        Icons.Filled.Check,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onPrimary,
-                        modifier = Modifier.padding(2.dp),
-                    )
-                }
+                        .fillMaxSize()
+                        .border(2.dp, MaterialTheme.colorScheme.primary, AppIconShape),
+                )
             }
             if (exceptionCount > 0) {
                 Icon(

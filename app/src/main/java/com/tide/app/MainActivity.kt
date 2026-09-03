@@ -58,21 +58,20 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.outlined.Apps
+import androidx.compose.material.icons.outlined.Inbox
+import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.Inbox
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.PauseCircle
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Restore
-import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -82,7 +81,6 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.TopAppBar
@@ -150,6 +148,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.tide.app.core.DeliveryTimeSuggester
 import com.tide.app.core.InboxLayout
 import com.tide.app.core.ManualOpen
 import com.tide.app.core.OpenHoursCalculator
@@ -330,8 +329,11 @@ class MainViewModel(
         }
     }
 
-    fun addSchedule(releaseMinutes: Int = 12 * 60) {
-        viewModelScope.launch { repository.addSchedule(releaseMinutes) }
+    fun addSchedule(
+        releaseMinutes: Int,
+        activeDaysMask: Int = ScheduleRuleEntity.ALL_DAYS_MASK,
+    ) {
+        viewModelScope.launch { repository.addSchedule(releaseMinutes, activeDaysMask) }
     }
 
     fun addInstantWindow() {
@@ -449,9 +451,9 @@ class MainViewModel(
 }
 
 private enum class Destination(val route: String, val label: String, val icon: ImageVector) {
-    Inbox("inbox", "Inbox", Icons.Filled.Inbox),
-    Schedule("schedule", "Schedule", Icons.Filled.Schedule),
-    Priority("priority", "Apps", Icons.Filled.Tune),
+    Inbox("inbox", "Inbox", Icons.Outlined.Inbox),
+    Schedule("schedule", "Schedule", Icons.Outlined.Schedule),
+    Priority("priority", "Apps", Icons.Outlined.Apps),
     Settings("settings", "Settings", Icons.Filled.Settings),
 }
 
@@ -509,7 +511,6 @@ private fun TideRoot(
     val scheduledOpen = remember(openHours, nowMillis) { OpenHoursCalculator().isOpenAt(nowMillis, openHours) }
     val isOpen = scheduledOpen || temporaryOpen
     var showTemporaryOpenDialog by remember { mutableStateOf(false) }
-    var showScheduleAddDialog by remember { mutableStateOf(false) }
     var requestedBatchExpansion by remember { mutableStateOf<String?>(null) }
 
     fun goToPrimary(destination: Destination) {
@@ -582,17 +583,6 @@ private fun TideRoot(
                 }
             },
             snackbarHost = { SnackbarHost(snackbarHostState) },
-            floatingActionButton = {
-                AnimatedVisibility(
-                    visible = !onSettings && currentPrimary == Destination.Schedule,
-                    enter = fadeIn() + expandVertically(),
-                    exit = fadeOut() + shrinkVertically(),
-                ) {
-                    FloatingActionButton(onClick = { showScheduleAddDialog = true }) {
-                        Icon(Icons.Filled.Add, contentDescription = "Add schedule item")
-                    }
-                }
-            },
             containerColor = MaterialTheme.colorScheme.surface,
         ) { padding ->
             Row(
@@ -726,43 +716,6 @@ private fun TideRoot(
             },
             confirmButton = {
                 TextButton(onClick = { showTemporaryOpenDialog = false }) { Text("Cancel") }
-            },
-        )
-    }
-
-    if (showScheduleAddDialog) {
-        AlertDialog(
-            onDismissRequest = { showScheduleAddDialog = false },
-            title = { Text("Add to schedule") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
-                    Text(
-                        "Choose what this schedule should add.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    AddScheduleChoice(
-                        title = "Delivery time",
-                        body = "Release everything waiting at a time you choose.",
-                        icon = Icons.Filled.Schedule,
-                        onClick = {
-                            viewModel.addSchedule()
-                            showScheduleAddDialog = false
-                        },
-                    )
-                    AddScheduleChoice(
-                        title = "Open hours",
-                        body = "Deliver what is waiting and let batched apps through for a while.",
-                        icon = Icons.Filled.NotificationsActive,
-                        onClick = {
-                            viewModel.addInstantWindow()
-                            showScheduleAddDialog = false
-                        },
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showScheduleAddDialog = false }) { Text("Cancel") }
             },
         )
     }
@@ -1562,7 +1515,7 @@ private fun ScheduleScreen(
     schedules: List<ScheduleRuleEntity>,
     instantWindows: List<InstantWindowEntity>,
     nowMillis: Long,
-    onAddDelivery: (Int) -> Unit,
+    onAddDelivery: (Int, Int) -> Unit,
     onAddOpenHours: () -> Unit,
     onUpdate: (ScheduleRuleEntity) -> Unit,
     onDelete: (Long) -> Unit,
@@ -1620,7 +1573,16 @@ private fun ScheduleScreen(
             TideMetricCard(
                 label = "Add a delivery",
                 value = "+",
-                onClick = { onAddDelivery(12 * 60) },
+                onClick = {
+                    val suggested = DeliveryTimeSuggester.suggest(
+                        existingMinutes = schedules.filter { it.isEnabled }.map { it.releaseMinutes },
+                        nowMinutes = minuteOfDay(nowMillis),
+                    )
+                    editingSchedule = ScheduleRuleEntity(
+                        releaseMinutes = suggested,
+                        updatedAtMillis = 0,
+                    )
+                },
             )
         }
         item(span = { GridItemSpan(maxLineSpan) }) {
@@ -1661,9 +1623,17 @@ private fun ScheduleScreen(
     editingSchedule?.let { schedule ->
         DeliveryTimeEditDialog(
             schedule = schedule,
-            onUpdate = {
-                onUpdate(it)
-                editingSchedule = it
+            onUpdate = { updated ->
+                editingSchedule = updated
+                if (updated.id > 0) onUpdate(updated)
+            },
+            onConfirm = { confirmed ->
+                if (confirmed.id > 0) {
+                    onUpdate(confirmed)
+                } else {
+                    onAddDelivery(confirmed.releaseMinutes, confirmed.activeDaysMask)
+                }
+                editingSchedule = null
             },
             onDelete = {
                 onDelete(it)
@@ -1693,6 +1663,7 @@ private fun ScheduleScreen(
 private fun DeliveryTimeEditDialog(
     schedule: ScheduleRuleEntity,
     onUpdate: (ScheduleRuleEntity) -> Unit,
+    onConfirm: (ScheduleRuleEntity) -> Unit,
     onDelete: (Long) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -1729,8 +1700,7 @@ private fun DeliveryTimeEditDialog(
         confirmButton = {
             Button(
                 onClick = {
-                    onUpdate(schedule.copy(releaseMinutes = state.hour * 60 + state.minute))
-                    onDismiss()
+                    onConfirm(schedule.copy(releaseMinutes = state.hour * 60 + state.minute))
                 },
             ) { Text("Set time") }
         },
@@ -2193,7 +2163,7 @@ private fun SwitchRow(
 private fun OnboardingScreen(
     installedApps: List<InstalledApp>,
     schedules: List<ScheduleRuleEntity>,
-    onAddSchedule: () -> Unit,
+    onAddSchedule: (Int, Int) -> Unit,
     onUpdateSchedule: (ScheduleRuleEntity) -> Unit,
     onComplete: (List<InstalledApp>) -> Unit,
 ) {
@@ -2344,9 +2314,10 @@ private fun OnboardingScreen(
 @Composable
 private fun OnboardingSchedulePage(
     schedules: List<ScheduleRuleEntity>,
-    onAddSchedule: () -> Unit,
+    onAddSchedule: (Int, Int) -> Unit,
     onUpdateSchedule: (ScheduleRuleEntity) -> Unit,
 ) {
+    var draft by remember { mutableStateOf<ScheduleRuleEntity?>(null) }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(MdSpacing.md),
@@ -2364,7 +2335,18 @@ private fun OnboardingSchedulePage(
         }
         if (schedules.isEmpty()) {
             item {
-                Button(onClick = onAddSchedule, modifier = Modifier.fillMaxWidth()) {
+                Button(
+                    onClick = {
+                        draft = ScheduleRuleEntity(
+                            releaseMinutes = DeliveryTimeSuggester.suggest(
+                                existingMinutes = emptyList(),
+                                nowMinutes = minuteOfDay(System.currentTimeMillis()),
+                            ),
+                            updatedAtMillis = 0,
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
                     Text("Add a delivery time")
                 }
             }
@@ -2377,6 +2359,18 @@ private fun OnboardingSchedulePage(
                 allowDelete = false,
             )
         }
+    }
+    draft?.let { schedule ->
+        DeliveryTimeEditDialog(
+            schedule = schedule,
+            onUpdate = { draft = it },
+            onConfirm = { confirmed ->
+                onAddSchedule(confirmed.releaseMinutes, confirmed.activeDaysMask)
+                draft = null
+            },
+            onDelete = { draft = null },
+            onDismiss = { draft = null },
+        )
     }
 }
 
@@ -2720,6 +2714,11 @@ private fun formatHeroCountdown(remainingMillis: Long): String {
         hours > 0 -> "${hours}h"
         else -> "${mins}m"
     }
+}
+
+private fun minuteOfDay(nowMillis: Long): Int {
+    val now = java.time.Instant.ofEpochMilli(nowMillis).atZone(java.time.ZoneId.systemDefault())
+    return now.hour * 60 + now.minute
 }
 
 private fun formatMinutes(minutes: Int): String {
