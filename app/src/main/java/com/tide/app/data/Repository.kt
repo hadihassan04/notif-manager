@@ -271,12 +271,12 @@ class Repository(
         }
     }
 
-    suspend fun addSchedule() {
+    suspend fun addSchedule(releaseMinutes: Int = 12 * 60) {
         dao.upsertSchedule(
             ScheduleRuleEntity(
                 name = "",
                 holdStartMinutes = 7 * 60,
-                releaseMinutes = 12 * 60,
+                releaseMinutes = releaseMinutes.coerceIn(0, 23 * 60 + 55),
                 updatedAtMillis = System.currentTimeMillis(),
             )
         )
