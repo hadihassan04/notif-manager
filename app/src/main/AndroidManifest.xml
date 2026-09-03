@@ -32,6 +32,14 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".notifications.ReleasedNotificationTrampolineActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.Tide.Trampoline" />
+
         <service
             android:name=".notifications.NotificationCaptureService"
             android:exported="true"

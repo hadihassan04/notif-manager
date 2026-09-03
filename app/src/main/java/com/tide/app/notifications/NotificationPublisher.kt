@@ -38,8 +38,8 @@ class NotificationPublisher(private val context: Context) {
             .setContentText(spec.text)
             .setSubText(spec.appLabel)
             .setStyle(NotificationCompat.BigTextStyle().bigText(spec.text))
-            .setContentIntent(pendingIntent(spec, ReleasedNotificationReceiver.ACTION_OPEN))
-            .setDeleteIntent(pendingIntent(spec, ReleasedNotificationReceiver.ACTION_DISMISS))
+            .setContentIntent(contentIntent(spec))
+            .setDeleteIntent(dismissIntent(spec))
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
@@ -51,18 +51,43 @@ class NotificationPublisher(private val context: Context) {
         NotificationManagerCompat.from(context).notify(RELEASED_TAG, shadeId(spec.notificationKey), notification)
     }
 
-    private fun pendingIntent(spec: ReleasedNotificationSpec, action: String): PendingIntent {
-        val intent = Intent(context, ReleasedNotificationReceiver::class.java).apply {
-            this.action = action
-            data = "tide://released/${action.substringAfterLast('.')}/${Uri.encode(spec.notificationKey)}".toUri()
-            putExtra(ReleasedNotificationReceiver.EXTRA_NOTIFICATION_KEY, spec.notificationKey)
-            putExtra(ReleasedNotificationReceiver.EXTRA_PACKAGE_NAME, spec.packageName)
-            putExtra(ReleasedNotificationReceiver.EXTRA_APP_LABEL, spec.appLabel)
+    /**
+     * Attach the captured app PendingIntent directly so SystemUI delivers the
+     * tap with notification-click privileges. Tide's BroadcastReceiver is only
+     * the swipe-away deleteIntent — it must not start another app's UI.
+     */
+    private fun contentIntent(spec: ReleasedNotificationSpec): PendingIntent {
+        return ReleasedNotificationIntents.shadeContentIntent(
+            PendingIntentRegistry.get(spec.notificationKey),
+            trampolineIntent(spec),
+        )
+    }
+
+    private fun trampolineIntent(spec: ReleasedNotificationSpec): PendingIntent {
+        val intent = Intent(context, ReleasedNotificationTrampolineActivity::class.java).apply {
+            data = "tide://released/open/${Uri.encode(spec.notificationKey)}".toUri()
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION
+            putExtra(ReleasedNotificationIntents.EXTRA_NOTIFICATION_KEY, spec.notificationKey)
+            putExtra(ReleasedNotificationIntents.EXTRA_PACKAGE_NAME, spec.packageName)
+            putExtra(ReleasedNotificationIntents.EXTRA_APP_LABEL, spec.appLabel)
         }
-        val requestCode = shadeId(spec.notificationKey.xorHash(action))
+        return PendingIntent.getActivity(
+            context,
+            shadeId(spec.notificationKey.xorHash("trampoline")),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
+
+    private fun dismissIntent(spec: ReleasedNotificationSpec): PendingIntent {
+        val intent = Intent(context, ReleasedNotificationReceiver::class.java).apply {
+            action = ReleasedNotificationReceiver.ACTION_DISMISS
+            data = "tide://released/dismiss/${Uri.encode(spec.notificationKey)}".toUri()
+            putExtra(ReleasedNotificationIntents.EXTRA_NOTIFICATION_KEY, spec.notificationKey)
+        }
         return PendingIntent.getBroadcast(
             context,
-            requestCode,
+            shadeId(spec.notificationKey.xorHash(ReleasedNotificationReceiver.ACTION_DISMISS)),
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )

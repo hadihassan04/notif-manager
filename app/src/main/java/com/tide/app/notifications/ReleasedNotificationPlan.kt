@@ -3,8 +3,10 @@ package com.tide.app.notifications
 import com.tide.app.data.NotificationEntity
 
 enum class ReleasedTap {
+    /** Shade [android.app.Notification.contentIntent] is the captured app PendingIntent. */
     CAPTURED_INTENT,
-    OPEN_APP,
+    /** Shade contentIntent is Tide's Activity trampoline; original token is gone. */
+    TRAMPOLINE,
 }
 
 data class ReleasedNotificationSpec(
@@ -17,9 +19,10 @@ data class ReleasedNotificationSpec(
 )
 
 /**
- * A batch release is one shade card per captured notification, each tapping
- * through the stored content PendingIntent when it still exists. There is no
- * Tide summary titled "Waiting notifications delivered".
+ * A batch release is one shade card per captured notification. When the
+ * captured content PendingIntent still exists it is attached as the shade
+ * contentIntent; otherwise the card uses Tide's Activity trampoline. There is
+ * no Tide summary titled "Waiting notifications delivered".
  */
 object ReleasedNotificationPlan {
     fun specs(
@@ -34,7 +37,7 @@ object ReleasedNotificationPlan {
                 appLabel = item.appLabel,
                 title = item.title?.takeIf { it.isNotBlank() } ?: item.appLabel,
                 text = if (hasIntent) item.text else fallbackText(item.text, item.appLabel),
-                tap = if (hasIntent) ReleasedTap.CAPTURED_INTENT else ReleasedTap.OPEN_APP,
+                tap = if (hasIntent) ReleasedTap.CAPTURED_INTENT else ReleasedTap.TRAMPOLINE,
             )
         }
     }
