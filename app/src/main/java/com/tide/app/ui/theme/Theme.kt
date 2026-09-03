@@ -81,6 +81,7 @@ private val FallbackDarkColors = darkColorScheme(
 )
 
 private val TideTypography = Typography(
+    displayLarge = TextStyle(fontSize = 56.sp, lineHeight = 64.sp, fontWeight = FontWeight.Bold),
     displaySmall = TextStyle(fontSize = 36.sp, lineHeight = 42.sp, fontWeight = FontWeight.SemiBold),
     headlineMedium = TextStyle(fontSize = 28.sp, lineHeight = 34.sp, fontWeight = FontWeight.SemiBold),
     headlineSmall = TextStyle(fontSize = 24.sp, lineHeight = 30.sp, fontWeight = FontWeight.SemiBold),
@@ -95,7 +96,7 @@ private val TideShapes = Shapes(
     small = androidx.compose.foundation.shape.RoundedCornerShape(10.dp),
     medium = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
     large = androidx.compose.foundation.shape.RoundedCornerShape(24.dp),
-    extraLarge = androidx.compose.foundation.shape.RoundedCornerShape(28.dp),
+    extraLarge = androidx.compose.foundation.shape.RoundedCornerShape(32.dp),
 )
 
 @Composable

@@ -49,6 +49,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -56,6 +57,7 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.matchParentSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -131,21 +133,18 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -162,7 +161,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import androidx.core.graphics.drawable.toBitmap
 import androidx.core.net.toUri
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.ViewModel
@@ -173,13 +171,13 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.tide.app.core.Insights
 import com.tide.app.core.InsightsCalculator
+import com.tide.app.core.ManualOpen
 import com.tide.app.core.OpenHoursCalculator
 import com.tide.app.core.ScheduleCalculator
 import com.tide.app.data.AppRuleUi
@@ -194,6 +192,9 @@ import com.tide.app.data.Repository
 import com.tide.app.data.ScheduleRuleEntity
 import com.tide.app.data.ThemeMode
 import com.tide.app.notifications.PendingIntentRegistry
+import com.tide.app.ui.AppIcon
+import com.tide.app.ui.AppSelectionPane
+import com.tide.app.ui.TideWaves
 import com.tide.app.ui.theme.MdSpacing
 import com.tide.app.ui.theme.TideTheme
 import kotlinx.coroutines.Dispatchers
@@ -202,13 +203,11 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.text.DateFormat
 import java.time.DayOfWeek
 import java.time.format.TextStyle
 import java.util.Locale
 import java.util.Date
-import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
@@ -326,6 +325,11 @@ class MainViewModel(
         SharingStarted.WhileSubscribed(5_000),
         0L,
     )
+    val pauseBatching: StateFlow<Boolean> = settings.pauseBatching.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5_000),
+        false,
+    )
     val onboardingCompleted: StateFlow<Boolean> = settings.onboardingCompleted.stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5_000),
@@ -430,6 +434,10 @@ class MainViewModel(
         viewModelScope.launch { repository.startTemporaryOpen(untilMillis) }
     }
 
+    fun startIndefiniteOpen() {
+        viewModelScope.launch { repository.startIndefiniteOpen() }
+    }
+
     fun endTemporaryOpen() {
         viewModelScope.launch { repository.endTemporaryOpen() }
     }
@@ -479,10 +487,11 @@ class MainViewModel(
 private enum class Destination(val route: String, val label: String, val icon: ImageVector) {
     Inbox("inbox", "Inbox", Icons.Filled.Inbox),
     Schedule("schedule", "Schedule", Icons.Filled.Schedule),
-    // The route is the persisted nav key, so it keeps its original name.
     Priority("priority", "Apps", Icons.Filled.Tune),
     Settings("settings", "Settings", Icons.Filled.Settings),
 }
+
+private val PrimaryDestinations = listOf(Destination.Inbox, Destination.Schedule, Destination.Priority)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -513,13 +522,17 @@ private fun TideRoot(
 
     val navController = rememberNavController()
     val snackbarHostState = remember { SnackbarHostState() }
+    val homePagerState = rememberPagerState(pageCount = { PrimaryDestinations.size })
+    val scope = rememberCoroutineScope()
     val backStack by navController.currentBackStackEntryAsState()
-    val currentRoute = backStack?.destination?.route ?: Destination.Inbox.route
-    val topLevel = Destination.entries.firstOrNull { it.route == currentRoute }
-    val title = topLevel?.label ?: "Inbox"
+    val currentRoute = backStack?.destination?.route ?: "home"
+    val onSettings = currentRoute == Destination.Settings.route
+    val currentPrimary = PrimaryDestinations[homePagerState.currentPage.coerceIn(0, PrimaryDestinations.lastIndex)]
+    val title = if (onSettings) "Settings" else currentPrimary.label
     val schedules by viewModel.schedules.collectAsStateWithLifecycle()
     val openHours by viewModel.instantWindows.collectAsStateWithLifecycle()
     val temporaryOpenUntil by viewModel.temporaryOpenUntilMillis.collectAsStateWithLifecycle()
+    val pauseBatching by viewModel.pauseBatching.collectAsStateWithLifecycle()
     var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) {
         while (true) {
@@ -527,16 +540,25 @@ private fun TideRoot(
             nowMillis = System.currentTimeMillis()
         }
     }
-    val temporaryOpen = temporaryOpenUntil > nowMillis
+    val manualOpen = ManualOpen(indefinite = pauseBatching, untilMillis = temporaryOpenUntil)
+    val temporaryOpen = manualOpen.isActive(nowMillis)
     val scheduledOpen = remember(openHours, nowMillis) { OpenHoursCalculator().isOpenAt(nowMillis, openHours) }
+    val isOpen = scheduledOpen || temporaryOpen
     var showTemporaryOpenDialog by remember { mutableStateOf(false) }
     var showScheduleAddDialog by remember { mutableStateOf(false) }
     var requestedBatchExpansion by remember { mutableStateOf<String?>(null) }
 
+    fun goToPrimary(destination: Destination) {
+        val index = PrimaryDestinations.indexOf(destination)
+        if (index < 0) return
+        if (onSettings) navController.popBackStack()
+        scope.launch { homePagerState.animateScrollToPage(index) }
+    }
+
     LaunchedEffect(pendingBatchId, onboardingCompleted) {
         if (pendingBatchId != null && onboardingCompleted) {
             requestedBatchExpansion = pendingBatchId
-            navigateTopLevel(navController, Destination.Inbox.route)
+            goToPrimary(Destination.Inbox)
             onBatchIntentConsumed()
         }
     }
@@ -548,14 +570,14 @@ private fun TideRoot(
                 TopAppBar(
                     title = { Text(title) },
                     navigationIcon = {
-                        if (topLevel == null) {
+                        if (onSettings) {
                             IconButton(onClick = { navController.popBackStack() }) {
                                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                             }
                         }
                     },
                     actions = {
-                        if (currentRoute != Destination.Settings.route) {
+                        if (!onSettings && currentPrimary != Destination.Inbox) {
                             if (scheduledOpen && !temporaryOpen) {
                                 Text(
                                     "Open now",
@@ -570,12 +592,16 @@ private fun TideRoot(
                                         else showTemporaryOpenDialog = true
                                     },
                                 ) {
-                                    Text(if (temporaryOpen) "End open" else "Allow all")
+                                    Text(if (temporaryOpen) "Start waiting" else "Allow all")
                                 }
                             }
                         }
-                        if (currentRoute != Destination.Settings.route) {
-                            IconButton(onClick = { navigateTopLevel(navController, Destination.Settings.route) }) {
+                        if (!onSettings) {
+                            IconButton(
+                                onClick = {
+                                    navController.navigate(Destination.Settings.route) { launchSingleTop = true }
+                                },
+                            ) {
                                 Icon(Icons.Filled.Settings, contentDescription = "Settings")
                             }
                         }
@@ -587,14 +613,14 @@ private fun TideRoot(
                 )
             },
             bottomBar = {
-                if (!useRail) {
-                    AppNavigationBar(navController, currentRoute)
+                if (!useRail && !onSettings) {
+                    AppNavigationBar(selected = currentPrimary, onSelect = ::goToPrimary)
                 }
             },
             snackbarHost = { SnackbarHost(snackbarHostState) },
             floatingActionButton = {
                 AnimatedVisibility(
-                    visible = currentRoute == Destination.Schedule.route,
+                    visible = !onSettings && currentPrimary == Destination.Schedule,
                     enter = fadeIn() + expandVertically(),
                     exit = fadeOut() + shrinkVertically(),
                 ) {
@@ -610,59 +636,67 @@ private fun TideRoot(
                     .fillMaxSize()
                     .padding(padding),
             ) {
-                if (useRail) {
-                    AppNavigationRail(navController, currentRoute)
+                if (useRail && !onSettings) {
+                    AppNavigationRail(selected = currentPrimary, onSelect = ::goToPrimary)
                 }
                 NavHost(
                     navController = navController,
-                    startDestination = Destination.Inbox.route,
+                    startDestination = "home",
                     modifier = Modifier.weight(1f),
                 ) {
-                    composable(Destination.Inbox.route) {
+                    composable("home") {
                         val inbox by viewModel.inbox.collectAsStateWithLifecycle()
                         val notifications by viewModel.history.collectAsStateWithLifecycle()
-                        val schedules by viewModel.schedules.collectAsStateWithLifecycle()
-                        NotificationsScreen(
-                            batches = inbox,
-                            notifications = notifications,
-                            schedules = schedules,
-                            snackbarHostState = snackbarHostState,
-                            requestedBatchExpansion = requestedBatchExpansion,
-                            onBatchExpansionConsumed = { requestedBatchExpansion = null },
-                            onArchiveNotifications = viewModel::archiveNotifications,
-                            onUnarchiveNotifications = viewModel::unarchiveNotifications,
-                            onArchiveHistory = viewModel::archiveHistory,
-                        )
-                    }
-                    composable(Destination.Priority.route) {
                         val rules by viewModel.rulesUi.collectAsStateWithLifecycle()
                         val showSystemApps by viewModel.showSystemApps.collectAsStateWithLifecycle()
                         val mediaNoticeDismissed by viewModel.mediaNoticeDismissed.collectAsStateWithLifecycle()
-                        RulesScreen(
-                            rules = rules,
-                            showSystemApps = showSystemApps,
-                            showMediaNotice = !mediaNoticeDismissed,
-                            onDismissMediaNotice = viewModel::dismissMediaNotice,
-                            onSetAppMode = viewModel::setAppMode,
-                            onSetAppModes = viewModel::setAppModes,
-                            onSetChannelMode = viewModel::setChannelMode,
-                        )
-                    }
-                    composable(Destination.Schedule.route) {
-                        val schedules by viewModel.schedules.collectAsStateWithLifecycle()
-                        val inbox by viewModel.inbox.collectAsStateWithLifecycle()
-                        ScheduleScreen(
-                            schedules = schedules,
-                            instantWindows = openHours,
-                            batches = inbox,
-                            temporaryOpenUntilMillis = temporaryOpenUntil,
-                            onStartTemporaryOpen = viewModel::startTemporaryOpen,
-                            onEndTemporaryOpen = viewModel::endTemporaryOpen,
-                            onUpdate = viewModel::updateSchedule,
-                            onDelete = viewModel::deleteSchedule,
-                            onUpdateInstantWindow = viewModel::updateInstantWindow,
-                            onDeleteInstantWindow = viewModel::deleteInstantWindow,
-                        )
+                        HorizontalPager(
+                            state = homePagerState,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clipToBounds(),
+                            beyondViewportPageCount = 1,
+                        ) { page ->
+                            when (PrimaryDestinations[page]) {
+                                Destination.Inbox -> NotificationsScreen(
+                                    batches = inbox,
+                                    notifications = notifications,
+                                    schedules = schedules,
+                                    isOpen = isOpen,
+                                    manualOpen = manualOpen,
+                                    nowMillis = nowMillis,
+                                    onAllowAll = { showTemporaryOpenDialog = true },
+                                    onEndOpen = viewModel::endTemporaryOpen,
+                                    snackbarHostState = snackbarHostState,
+                                    requestedBatchExpansion = requestedBatchExpansion,
+                                    onBatchExpansionConsumed = { requestedBatchExpansion = null },
+                                    onArchiveNotifications = viewModel::archiveNotifications,
+                                    onUnarchiveNotifications = viewModel::unarchiveNotifications,
+                                    onArchiveHistory = viewModel::archiveHistory,
+                                )
+                                Destination.Schedule -> ScheduleScreen(
+                                    schedules = schedules,
+                                    instantWindows = openHours,
+                                    batches = inbox,
+                                    isOpen = isOpen,
+                                    manualOpen = manualOpen,
+                                    nowMillis = nowMillis,
+                                    onUpdate = viewModel::updateSchedule,
+                                    onDelete = viewModel::deleteSchedule,
+                                    onUpdateInstantWindow = viewModel::updateInstantWindow,
+                                    onDeleteInstantWindow = viewModel::deleteInstantWindow,
+                                )
+                                Destination.Priority -> RulesScreen(
+                                    rules = rules,
+                                    showSystemApps = showSystemApps,
+                                    showMediaNotice = !mediaNoticeDismissed,
+                                    onDismissMediaNotice = viewModel::dismissMediaNotice,
+                                    onSetAppMode = viewModel::setAppMode,
+                                    onSetChannelMode = viewModel::setChannelMode,
+                                )
+                                Destination.Settings -> Unit
+                            }
+                        }
                     }
                     composable(Destination.Settings.route) {
                         val showSystemApps by viewModel.showSystemApps.collectAsStateWithLifecycle()
@@ -695,18 +729,25 @@ private fun TideRoot(
                 Column(verticalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
                     Text("Waiting notifications will be delivered now. New notifications can interrupt you until this Open period ends.")
                     listOf(
-                        "30 minutes" to nowMillis + 30L * 60L * 1000L,
-                        "1 hour" to nowMillis + 60L * 60L * 1000L,
-                        "Until next delivery" to (
+                        Triple("30 minutes", "Open until ${formatTime(nowMillis + 30L * 60L * 1000L)}", nowMillis + 30L * 60L * 1000L),
+                        Triple("1 hour", "Open until ${formatTime(nowMillis + 60L * 60L * 1000L)}", nowMillis + 60L * 60L * 1000L),
+                        Triple(
+                            "Until next delivery",
+                            "Open until ${formatTime(
+                                ScheduleCalculator().nextReleases(nowMillis, schedules)
+                                    .minByOrNull { it.triggerAtMillis }
+                                    ?.triggerAtMillis
+                                    ?: nowMillis + 60L * 60L * 1000L,
+                            )}",
                             ScheduleCalculator().nextReleases(nowMillis, schedules)
                                 .minByOrNull { it.triggerAtMillis }
                                 ?.triggerAtMillis
-                                ?: nowMillis + 60L * 60L * 1000L
-                            ),
-                    ).forEach { (label, until) ->
+                                ?: nowMillis + 60L * 60L * 1000L,
+                        ),
+                    ).forEach { (label, body, until) ->
                         AddScheduleChoice(
                             title = label,
-                            body = "Open until ${formatTime(until)}",
+                            body = body,
                             icon = Icons.Filled.NotificationsActive,
                             onClick = {
                                 viewModel.startTemporaryOpen(until)
@@ -714,6 +755,15 @@ private fun TideRoot(
                             },
                         )
                     }
+                    AddScheduleChoice(
+                        title = "Until I turn it off",
+                        body = "Stay Open until you tap Start waiting.",
+                        icon = Icons.Filled.PlayCircle,
+                        onClick = {
+                            viewModel.startIndefiniteOpen()
+                            showTemporaryOpenDialog = false
+                        },
+                    )
                 }
             },
             confirmButton = {
@@ -792,12 +842,12 @@ private fun AddScheduleChoice(
 }
 
 @Composable
-private fun AppNavigationBar(navController: NavHostController, currentRoute: String) {
+private fun AppNavigationBar(selected: Destination, onSelect: (Destination) -> Unit) {
     NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
-        Destination.entries.filter { it != Destination.Settings }.forEach { destination ->
+        PrimaryDestinations.forEach { destination ->
             NavigationBarItem(
-                selected = currentRoute == destination.route,
-                onClick = { navigateTopLevel(navController, destination.route) },
+                selected = selected == destination,
+                onClick = { onSelect(destination) },
                 icon = { Icon(destination.icon, contentDescription = destination.label) },
                 label = { Text(destination.label) },
             )
@@ -806,25 +856,17 @@ private fun AppNavigationBar(navController: NavHostController, currentRoute: Str
 }
 
 @Composable
-private fun AppNavigationRail(navController: NavHostController, currentRoute: String) {
+private fun AppNavigationRail(selected: Destination, onSelect: (Destination) -> Unit) {
     NavigationRail(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
         Spacer(Modifier.height(MdSpacing.sm))
-        Destination.entries.filter { it != Destination.Settings }.forEach { destination ->
+        PrimaryDestinations.forEach { destination ->
             NavigationRailItem(
-                selected = currentRoute == destination.route,
-                onClick = { navigateTopLevel(navController, destination.route) },
+                selected = selected == destination,
+                onClick = { onSelect(destination) },
                 icon = { Icon(destination.icon, contentDescription = destination.label) },
                 label = { Text(destination.label) },
             )
         }
-    }
-}
-
-private fun navigateTopLevel(navController: NavHostController, route: String) {
-    navController.navigate(route) {
-        popUpTo(Destination.Inbox.route) { saveState = true }
-        launchSingleTop = true
-        restoreState = true
     }
 }
 
@@ -858,6 +900,11 @@ private fun NotificationsScreen(
     batches: List<InboxBatch>,
     notifications: List<NotificationEntity>,
     schedules: List<ScheduleRuleEntity>,
+    isOpen: Boolean,
+    manualOpen: ManualOpen,
+    nowMillis: Long,
+    onAllowAll: () -> Unit,
+    onEndOpen: () -> Unit,
     snackbarHostState: SnackbarHostState,
     requestedBatchExpansion: String?,
     onBatchExpansionConsumed: () -> Unit,
@@ -869,13 +916,6 @@ private fun NotificationsScreen(
     val scope = rememberCoroutineScope()
     var showArchived by remember { mutableStateOf(false) }
 
-    var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(Unit) {
-        while (true) {
-            delay(60_000L)
-            nowMillis = System.currentTimeMillis()
-        }
-    }
     LaunchedEffect(requestedBatchExpansion, batches) {
         val batchId = requestedBatchExpansion ?: return@LaunchedEffect
         if (batches.any { it.batchId == batchId } && batchId !in expandedBatchIds) {
@@ -916,9 +956,17 @@ private fun NotificationsScreen(
         contentPadding = PaddingValues(MdSpacing.sm),
         verticalArrangement = Arrangement.spacedBy(MdSpacing.sm),
     ) {
-        if (waitingBatch != null || schedules.isNotEmpty()) {
+        if (waitingBatch != null || schedules.isNotEmpty() || isOpen) {
             item {
-                NextBatchCard(waitingBatch = waitingBatch, schedules = schedules, nowMillis = nowMillis)
+                NextBatchCard(
+                    waitingBatch = waitingBatch,
+                    schedules = schedules,
+                    nowMillis = nowMillis,
+                    isOpen = isOpen,
+                    manualOpen = manualOpen,
+                    onAllowAll = onAllowAll,
+                    onEndOpen = onEndOpen,
+                )
             }
         }
 
@@ -1116,47 +1164,73 @@ private fun InboxOverviewCard(batches: List<InboxBatch>, insights: Insights) {
 }
 
 @Composable
-private fun NextBatchCard(waitingBatch: InboxBatch?, schedules: List<ScheduleRuleEntity>, nowMillis: Long) {
+private fun NextBatchCard(
+    waitingBatch: InboxBatch?,
+    schedules: List<ScheduleRuleEntity>,
+    nowMillis: Long,
+    isOpen: Boolean,
+    manualOpen: ManualOpen,
+    onAllowAll: () -> Unit,
+    onEndOpen: () -> Unit,
+) {
     val nextScheduleMillis = remember(schedules, nowMillis) {
         ScheduleCalculator().nextReleases(nowMillis, schedules).minByOrNull { it.triggerAtMillis }?.triggerAtMillis
     }
-    val nextReleaseMillis = waitingBatch?.releaseAtMillis ?: nextScheduleMillis ?: return
-    val remaining = nextReleaseMillis - nowMillis
+    val nextReleaseMillis = waitingBatch?.releaseAtMillis ?: nextScheduleMillis
+    val remaining = (nextReleaseMillis ?: nowMillis) - nowMillis
     val totalHeld = waitingBatch?.notificationCount ?: 0
+    val manualActive = manualOpen.isActive(nowMillis)
 
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isOpen) MaterialTheme.colorScheme.tertiaryContainer else MaterialTheme.colorScheme.primaryContainer,
+        ),
         shape = MaterialTheme.shapes.large,
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(MdSpacing.sm),
-            verticalAlignment = Alignment.CenterVertically,
+            verticalArrangement = Arrangement.spacedBy(MdSpacing.xs),
         ) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    "Next delivery",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
-                )
-                Text(
-                    formatCountdown(remaining),
-                    style = MaterialTheme.typography.headlineMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        if (isOpen) "Open" else "Waiting",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
+                    )
+                    Text(
+                        when {
+                            manualOpen.indefinite -> "Until you end it"
+                            isOpen && manualActive -> formatCountdown(manualOpen.remainingMillis(nowMillis))
+                            isOpen -> "Routine notifications can interrupt you"
+                            nextReleaseMillis != null -> formatCountdown(remaining)
+                            else -> "Add a delivery time"
+                        },
+                        style = MaterialTheme.typography.headlineMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    if (!isOpen && nextReleaseMillis != null) {
+                        Text(
+                            "Next delivery ${formatTime(nextReleaseMillis)} · $totalHeld waiting",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                }
             }
-            Column(horizontalAlignment = Alignment.End) {
-                Text(
-                    "Held",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f),
-                )
-                Text(
-                    "$totalHeld",
-                    style = MaterialTheme.typography.headlineMedium,
-                )
+            if (manualActive) {
+                Button(onClick = onEndOpen, modifier = Modifier.fillMaxWidth()) {
+                    Text("Start waiting")
+                }
+            } else if (!isOpen) {
+                Button(onClick = onAllowAll, modifier = Modifier.fillMaxWidth()) {
+                    Text("Allow all")
+                }
             }
         }
     }
@@ -1531,96 +1605,55 @@ private fun RulesScreen(
     showMediaNotice: Boolean,
     onDismissMediaNotice: () -> Unit,
     onSetAppMode: (InstalledApp, DeliveryMode) -> Unit,
-    onSetAppModes: (List<InstalledApp>, DeliveryMode) -> Unit,
     onSetChannelMode: (ChannelRuleUi, DeliveryMode?) -> Unit,
 ) {
     var query by remember { mutableStateOf("") }
-    val selectedPackages = remember { mutableStateListOf<String>() }
     var openedPackage by remember { mutableStateOf<String?>(null) }
-
     val visibleRules = remember(rules, showSystemApps, query) {
         rules
             .filter { showSystemApps || !it.app.isSystemApp }
             .filter { it.matches(query) }
     }
-    val instantRules = visibleRules.filter { it.app.mode == DeliveryMode.INSTANT }
-    val batchRules = visibleRules.filter { it.app.mode == DeliveryMode.BATCH }
-    val selecting = selectedPackages.isNotEmpty()
-    // Drawn from every rule, not the visible ones: a selection made before a search was
-    // typed still moves the apps the count promised.
-    val selectedApps = rules.map { it.app }.filter { it.packageName in selectedPackages }
+    val apps = visibleRules.map { it.app }
+    val instantCount = apps.count { it.mode == DeliveryMode.INSTANT || it.role.lockedInstant }
 
-    fun toggle(packageName: String) {
-        if (packageName in selectedPackages) selectedPackages.remove(packageName)
-        else selectedPackages.add(packageName)
-    }
-
-    Column(Modifier.fillMaxSize()) {
-        LazyVerticalGrid(
-            columns = GridCells.Adaptive(minSize = 84.dp),
-            modifier = Modifier.weight(1f),
-            contentPadding = PaddingValues(MdSpacing.sm),
-            verticalArrangement = Arrangement.spacedBy(MdSpacing.sm),
-            horizontalArrangement = Arrangement.spacedBy(MdSpacing.xs),
-        ) {
-            fun fullWidth(key: String, content: @Composable () -> Unit) {
-                item(key = key, span = { GridItemSpan(maxLineSpan) }) { content() }
-            }
-
-            fullWidth("header") {
-                Column(verticalArrangement = Arrangement.spacedBy(MdSpacing.xs)) {
-                    Text("Choose what can interrupt you", style = MaterialTheme.typography.headlineSmall)
-                    Text(
-                        "Hold an app to select it, then move what you picked to the other side.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-            if (showMediaNotice) {
-                fullWidth("media_notice") { MediaAppsNotice(onDismiss = onDismissMediaNotice) }
-            }
-            fullWidth("search") {
-                SearchField(query, onQueryChange = { query = it }, placeholder = "Search apps and channels")
-            }
-
-            if (visibleRules.isEmpty()) {
-                fullWidth("empty") {
-                    EmptyState("No apps found", "Try a different search or enable system apps.")
-                }
-            }
-
-            listOf(DeliveryMode.INSTANT to instantRules, DeliveryMode.BATCH to batchRules)
-                .filter { (_, sectionRules) -> sectionRules.isNotEmpty() }
-                .forEach { (mode, sectionRules) ->
-                    fullWidth("section_${mode.name}") {
-                        RulesSectionHeader(mode = mode, count = sectionRules.size)
-                    }
-                    items(sectionRules, key = { "${mode.name}_${it.app.packageName}" }) { appRule ->
-                        AppTile(
-                            appRule = appRule,
-                            selected = appRule.app.packageName in selectedPackages,
-                            onClick = {
-                                if (selecting) toggle(appRule.app.packageName)
-                                else openedPackage = appRule.app.packageName
-                            },
-                            onLongClick = { toggle(appRule.app.packageName) },
-                        )
-                    }
-                }
-        }
-
-        AnimatedVisibility(visible = selecting) {
-            SelectionBar(
-                count = selectedPackages.size,
-                onClear = { selectedPackages.clear() },
-                onMove = { mode ->
-                    onSetAppModes(selectedApps, mode)
-                    selectedPackages.clear()
-                },
+    AppSelectionPane(
+        apps = apps,
+        isInstant = { it.mode == DeliveryMode.INSTANT || it.role.lockedInstant },
+        onToggle = { app, instant ->
+            if (app.role.lockedInstant) return@AppSelectionPane
+            onSetAppMode(app, if (instant) DeliveryMode.INSTANT else DeliveryMode.BATCH)
+        },
+        query = query,
+        onQueryChange = { query = it },
+        header = {
+            Text(
+                "Priority apps always reach you, even while routine notifications are waiting.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-        }
-    }
+            if (instantCount > 0) {
+                Text(
+                    "$instantCount instant app${if (instantCount == 1) "" else "s"}",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+        },
+        mediaNotice = if (showMediaNotice) {
+            { MediaAppsNotice(onDismiss = onDismissMediaNotice) }
+        } else {
+            null
+        },
+        onRowClick = { openedPackage = it.packageName },
+        exceptionCount = { app ->
+            rules.firstOrNull { it.app.packageName == app.packageName }
+                ?.channels
+                ?.count { it.mode != null && it.mode != app.mode }
+                ?: 0
+        },
+        searchPlaceholder = "Search apps",
+    )
 
     val opened = openedPackage?.let { packageName -> rules.firstOrNull { it.app.packageName == packageName } }
     if (opened != null) {
@@ -2157,32 +2190,21 @@ private fun ScheduleScreen(
     schedules: List<ScheduleRuleEntity>,
     instantWindows: List<InstantWindowEntity>,
     batches: List<InboxBatch>,
-    temporaryOpenUntilMillis: Long,
-    onStartTemporaryOpen: (Long) -> Unit,
-    onEndTemporaryOpen: () -> Unit,
+    isOpen: Boolean,
+    manualOpen: ManualOpen,
+    nowMillis: Long,
     onUpdate: (ScheduleRuleEntity) -> Unit,
     onDelete: (Long) -> Unit,
     onUpdateInstantWindow: (InstantWindowEntity) -> Unit,
     onDeleteInstantWindow: (Long) -> Unit,
 ) {
-    var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(Unit) {
-        while (true) {
-            delay(30_000L)
-            nowMillis = System.currentTimeMillis()
-        }
-    }
-    val scheduledOpen = remember(instantWindows, nowMillis) {
-        OpenHoursCalculator().isOpenAt(nowMillis, instantWindows)
-    }
-    val temporaryOpen = temporaryOpenUntilMillis > nowMillis
-    val isOpen = scheduledOpen || temporaryOpen
     val nextDelivery = remember(schedules, nowMillis) {
         ScheduleCalculator().nextReleases(nowMillis, schedules).minByOrNull { it.triggerAtMillis }
     }
     val waitingCount = remember(batches, nowMillis) {
         batches.filter { it.releaseAtMillis == 0L || it.releaseAtMillis > nowMillis }.sumOf { it.notificationCount }
     }
+    val temporaryOpen = manualOpen.isActive(nowMillis)
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(MdSpacing.sm),
@@ -2192,11 +2214,12 @@ private fun ScheduleScreen(
             ScheduleStatusCard(
                 isOpen = isOpen,
                 temporaryOpen = temporaryOpen,
-                temporaryOpenUntilMillis = temporaryOpenUntilMillis,
+                temporaryOpenUntilMillis = if (manualOpen.indefinite) 0L else manualOpen.untilMillis,
                 waitingCount = waitingCount,
                 nextDeliveryMillis = nextDelivery?.triggerAtMillis,
-                onStartTemporaryOpen = { onStartTemporaryOpen(nowMillis + 60L * 60L * 1000L) },
-                onEndTemporaryOpen = onEndTemporaryOpen,
+                indefinite = manualOpen.indefinite,
+                onStartTemporaryOpen = {},
+                onEndTemporaryOpen = {},
             )
         }
         item {
@@ -2248,6 +2271,7 @@ private fun ScheduleStatusCard(
     temporaryOpenUntilMillis: Long,
     waitingCount: Int,
     nextDeliveryMillis: Long?,
+    indefinite: Boolean,
     onStartTemporaryOpen: () -> Unit,
     onEndTemporaryOpen: () -> Unit,
 ) {
@@ -2264,18 +2288,15 @@ private fun ScheduleStatusCard(
             Text(if (isOpen) "Open now" else "Waiting now", style = MaterialTheme.typography.headlineSmall)
             Text(
                 when {
-                    isOpen && temporaryOpen -> "Batched notifications can reach you until ${formatTime(temporaryOpenUntilMillis)}."
-                    isOpen -> "Batched notifications can reach you while Open hours are on."
+                    isOpen && indefinite -> "Open until you tap Start waiting on Inbox."
+                    isOpen && temporaryOpen && temporaryOpenUntilMillis > 0L ->
+                        "Routine notifications can reach you until ${formatTime(temporaryOpenUntilMillis)}."
+                    isOpen -> "Routine notifications can reach you while Open hours are on."
                     nextDeliveryMillis != null -> "Next delivery ${formatDateTime(nextDeliveryMillis)} · $waitingCount waiting"
                     else -> "$waitingCount waiting · add a delivery time to release them safely"
                 },
                 style = MaterialTheme.typography.bodyLarge,
             )
-            if (temporaryOpen) {
-                OutlinedButton(onClick = onEndTemporaryOpen) { Text("End Open period") }
-            } else if (!isOpen) {
-                Button(onClick = onStartTemporaryOpen) { Text("Allow all for 1 hour") }
-            }
         }
     }
 }
@@ -2648,16 +2669,21 @@ private fun OnboardingScreen(
     }
     val permissions = rememberPermissionStatus(context, permissionRefresh)
     val selectedInstantPackages = remember { mutableStateListOf<String>() }
-    // Players are instant whatever happens here, so they start counted rather than
-    // sitting unticked in a list the user is being asked to complete.
-    LaunchedEffect(installedApps) {
-        installedApps
-            .filter { it.isMediaPlayer && !it.isSystemApp && it.packageName !in selectedInstantPackages }
-            .forEach { selectedInstantPackages.add(it.packageName) }
+    var seededDefaults by remember { mutableStateOf(false) }
+    val nonSystemApps = remember(installedApps) { installedApps.filter { !it.isSystemApp } }
+    LaunchedEffect(nonSystemApps) {
+        if (nonSystemApps.isEmpty()) return@LaunchedEffect
+        if (!seededDefaults) {
+            nonSystemApps.filter { it.role.defaultsToInstant }.forEach { app ->
+                if (app.packageName !in selectedInstantPackages) selectedInstantPackages.add(app.packageName)
+            }
+            seededDefaults = true
+        } else {
+            nonSystemApps.filter { it.role.lockedInstant }.forEach { app ->
+                if (app.packageName !in selectedInstantPackages) selectedInstantPackages.add(app.packageName)
+            }
+        }
     }
-    val nonSystemApps = installedApps
-        .filter { !it.isSystemApp }
-        .sortedWith(compareByDescending<InstalledApp> { it.isRecommendedInstantApp }.thenByDescending { it.isRecommendedHeavyApp }.thenBy { it.label })
 
     val pageCount = 4
     val pagerState = rememberPagerState(pageCount = { pageCount })
@@ -2680,8 +2706,10 @@ private fun OnboardingScreen(
     ) {
         HorizontalPager(
             state = pagerState,
-            modifier = Modifier.weight(1f),
-            userScrollEnabled = false,
+            modifier = Modifier
+                .weight(1f)
+                .clipToBounds(),
+            userScrollEnabled = true,
         ) { page ->
             when (page) {
                 0 -> OnboardingWelcomePage()
@@ -2703,12 +2731,9 @@ private fun OnboardingScreen(
         }
 
         Box {
-            // Tide rolling behind the controls, tying every page together.
             TideWaves(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .height(150.dp)
-                    .align(Alignment.BottomCenter),
+                    .matchParentSize(),
                 color = MaterialTheme.colorScheme.primary,
             )
             Column(
@@ -2920,142 +2945,37 @@ private fun OnboardingPermissionsPage(
 
 @Composable
 private fun OnboardingAppsPage(nonSystemApps: List<InstalledApp>, selectedInstantPackages: MutableList<String>) {
+    var query by remember { mutableStateOf("") }
     val instantCount = selectedInstantPackages.size
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(MdSpacing.md),
-        verticalArrangement = Arrangement.spacedBy(MdSpacing.xs),
-    ) {
-        item {
-            Column(
-                verticalArrangement = Arrangement.spacedBy(MdSpacing.xs),
-                modifier = Modifier.padding(bottom = MdSpacing.xs),
-            ) {
-                Text("What should always reach you?", style = MaterialTheme.typography.headlineMedium)
-                Text(
-                    "Instant apps reach you the moment they arrive. Everything else is batched until your next delivery time.",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                if (instantCount > 0) {
-                    Text(
-                        "$instantCount instant app${if (instantCount == 1) "" else "s"}",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                }
+    AppSelectionPane(
+        apps = nonSystemApps,
+        isInstant = { it.packageName in selectedInstantPackages || it.role.lockedInstant },
+        onToggle = { app, instant ->
+            if (app.role.lockedInstant) return@AppSelectionPane
+            if (instant) {
+                if (app.packageName !in selectedInstantPackages) selectedInstantPackages.add(app.packageName)
+            } else {
+                selectedInstantPackages.remove(app.packageName)
             }
-        }
-        item { MediaAppsNotice(modifier = Modifier.padding(bottom = MdSpacing.xs)) }
-        val players = nonSystemApps.filter { it.isMediaPlayer }
-        val recommended = nonSystemApps.filter { it.isRecommendedInstantApp && !it.isMediaPlayer }
-        val rest = nonSystemApps.filter { !it.isRecommendedInstantApp && !it.isMediaPlayer }
-        if (nonSystemApps.isEmpty()) {
-            item {
-                Text(
-                    "No apps are available yet. You can pick instant apps later.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-        if (players.isNotEmpty()) {
-            item {
-                OnboardingSectionLabel(
-                    title = "Always instant",
-                    body = "Music and video players, which stop playing if their notification is held.",
-                )
-            }
-            items(players, key = { "media_${it.packageName}" }) { app ->
-                OnboardingAppRow(app, selectedInstantPackages, locked = true)
-            }
-        }
-        if (recommended.isNotEmpty()) {
-            item {
-                OnboardingSectionLabel(
-                    title = "Recommended",
-                    body = "Calls, messages, email, banks, deliveries and anything tied to a time.",
-                )
-            }
-            items(recommended, key = { "rec_${it.packageName}" }) { app ->
-                OnboardingAppRow(app, selectedInstantPackages)
-            }
-        }
-        if (rest.isNotEmpty()) {
-            item { OnboardingSectionLabel(title = "All apps") }
-            items(rest, key = { "all_${it.packageName}" }) { app ->
-                OnboardingAppRow(app, selectedInstantPackages)
-            }
-        }
-    }
-}
-
-@Composable
-private fun OnboardingSectionLabel(title: String, body: String? = null) {
-    Column(
-        modifier = Modifier.padding(top = MdSpacing.xs),
-        verticalArrangement = Arrangement.spacedBy(2.dp),
-    ) {
-        Text(
-            title,
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        if (body != null) {
+        },
+        query = query,
+        onQueryChange = { query = it },
+        header = {
+            Text("What should always reach you?", style = MaterialTheme.typography.headlineSmall)
             Text(
-                body,
-                style = MaterialTheme.typography.bodySmall,
+                "Instant apps reach you the moment they arrive. Everything else waits for a delivery time.",
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-        }
-    }
-}
-
-@Composable
-private fun OnboardingAppRow(
-    app: InstalledApp,
-    selectedInstantPackages: MutableList<String>,
-    locked: Boolean = false,
-) {
-    val selected = locked || app.packageName in selectedInstantPackages
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(MaterialTheme.shapes.medium)
-            .clickable(enabled = !locked) {
-                if (selected) selectedInstantPackages.remove(app.packageName)
-                else selectedInstantPackages.add(app.packageName)
-            },
-        color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerLow,
-        shape = MaterialTheme.shapes.medium,
-    ) {
-        Row(
-            modifier = Modifier.padding(MdSpacing.xs),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(MdSpacing.sm),
-        ) {
-            AppIcon(packageName = app.packageName, label = app.label, modifier = Modifier.size(36.dp))
-            Column(Modifier.weight(1f)) {
-                Text(app.label, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (instantCount > 0) {
                 Text(
-                    when {
-                        locked -> "Instant · keeps playback working"
-                        selected -> "Instant · always gets through"
-                        else -> "Batch · waits for delivery"
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    "$instantCount instant app${if (instantCount == 1) "" else "s"}",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
                 )
             }
-            Switch(
-                checked = selected,
-                enabled = !locked,
-                onCheckedChange = {
-                    if (selected) selectedInstantPackages.remove(app.packageName)
-                    else selectedInstantPackages.add(app.packageName)
-                },
-            )
-        }
-    }
+        },
+    )
 }
 
 @Composable
@@ -3252,59 +3172,6 @@ private fun TopAppIcons(apps: List<String>, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun SearchField(value: String, onQueryChange: (String) -> Unit, placeholder: String) {
-    OutlinedTextField(
-        value = value,
-        onValueChange = onQueryChange,
-        modifier = Modifier.fillMaxWidth(),
-        leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-        placeholder = { Text(placeholder) },
-        singleLine = true,
-        shape = CircleShape,
-    )
-}
-
-private object AppIconCache {
-    private val icons = ConcurrentHashMap<String, ImageBitmap>()
-
-    fun cached(packageName: String): ImageBitmap? = icons[packageName]
-
-    suspend fun load(context: Context, packageName: String): ImageBitmap? {
-        cached(packageName)?.let { return it }
-        return withContext(Dispatchers.IO) {
-            icons[packageName] ?: runCatching {
-                context.packageManager.getApplicationIcon(packageName)
-                    .toBitmap(width = 96, height = 96)
-                    .asImageBitmap()
-            }.getOrNull()?.also { icons[packageName] = it }
-        }
-    }
-}
-
-@Composable
-private fun AppIcon(packageName: String, label: String, modifier: Modifier = Modifier) {
-    val context = LocalContext.current
-    // `produceState` restarts its producer for a key change but retains the underlying
-    // state object. A keyed composition boundary recreates it with an empty/new-package
-    // value, preventing a recycled row from briefly or permanently showing the prior icon.
-    key(packageName) {
-        val bitmap by produceState<ImageBitmap?>(initialValue = AppIconCache.cached(packageName)) {
-            value = AppIconCache.cached(packageName) ?: AppIconCache.load(context.applicationContext, packageName)
-        }
-        Surface(modifier = modifier.clip(MaterialTheme.shapes.medium), color = MaterialTheme.colorScheme.primaryContainer) {
-            Box(contentAlignment = Alignment.Center) {
-                val icon = bitmap
-                if (icon != null) {
-                    Image(bitmap = icon, contentDescription = "$label icon", modifier = Modifier.fillMaxSize())
-                } else {
-                    Text(label.take(1), style = MaterialTheme.typography.titleMedium)
-                }
-            }
-        }
-    }
-}
-
-@Composable
 private fun SectionCard(title: String, content: @Composable ColumnScope.() -> Unit) {
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow), shape = MaterialTheme.shapes.medium) {
         Column(
@@ -3496,72 +3363,4 @@ private fun formatTime(millis: Long): String {
 
 private fun formatDateTime(millis: Long): String {
     return DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(millis))
-}
-
-
-/**
- * A slow tide: three sine bands drifting at different speeds, the nearest one
- * opaque and the furthest faint. Phase is driven by one infinite transition, so
- * the whole thing costs a single animation clock regardless of band count.
- */
-@Composable
-private fun TideWaves(
-    modifier: Modifier = Modifier,
-    color: Color = MaterialTheme.colorScheme.primary,
-) {
-    val transition = rememberInfiniteTransition(label = "tide")
-    val phase by transition.animateFloat(
-        initialValue = 0f,
-        targetValue = (2 * Math.PI).toFloat(),
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 7000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart,
-        ),
-        label = "phase",
-    )
-    val swell by transition.animateFloat(
-        initialValue = 0.85f,
-        targetValue = 1.15f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 4200, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "swell",
-    )
-
-    // depth, alpha, phase multiplier. The multipliers are whole numbers so every
-    // band lands back on its starting phase when the transition restarts, which
-    // keeps the loop seamless; the negative one drifts the other way so the
-    // bands cross instead of sliding in formation.
-    val bands = listOf(
-        Triple(0.62f, 0.18f, 1f),
-        Triple(0.74f, 0.34f, -1f),
-        Triple(0.86f, 0.62f, 2f),
-    )
-
-    Canvas(modifier = modifier) {
-        val w = size.width
-        val h = size.height
-        if (w <= 0f || h <= 0f) return@Canvas
-        bands.forEachIndexed { index, (depth, alpha, speed) ->
-            val baseline = h * depth
-            val amplitude = h * 0.10f * swell * (1f - index * 0.15f)
-            val wavelength = w / (1.1f + index * 0.35f)
-            val path = Path().apply {
-                moveTo(0f, baseline)
-                var x = 0f
-                val step = 6f
-                while (x <= w) {
-                    val y = baseline + amplitude *
-                        sin((x / wavelength) * 2f * Math.PI.toFloat() + phase * speed)
-                    lineTo(x, y)
-                    x += step
-                }
-                lineTo(w, h)
-                lineTo(0f, h)
-                close()
-            }
-            drawPath(path = path, color = color.copy(alpha = alpha))
-        }
-    }
 }
