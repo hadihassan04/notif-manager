@@ -19,10 +19,8 @@ data class ReleasedNotificationSpec(
 )
 
 /**
- * A batch release is one shade card per captured notification. When the
- * captured content PendingIntent still exists it is attached as the shade
- * contentIntent; otherwise the card uses Tide's Activity trampoline. There is
- * no Tide summary titled "Waiting notifications delivered".
+ * Specs for opening a captured notification from Inbox. Release itself does
+ * not post shade cards — items appear in Inbox only.
  */
 object ReleasedNotificationPlan {
     fun specs(
@@ -36,23 +34,17 @@ object ReleasedNotificationPlan {
                 packageName = item.packageName,
                 appLabel = item.appLabel,
                 title = item.title?.takeIf { it.isNotBlank() } ?: item.appLabel,
-                text = if (hasIntent) item.text else fallbackText(item.text, item.appLabel),
+                text = item.text,
                 tap = if (hasIntent) ReleasedTap.CAPTURED_INTENT else ReleasedTap.TRAMPOLINE,
             )
         }
     }
 
-    fun fallbackText(originalText: String?, appLabel: String): String {
-        val body = originalText?.takeIf { it.isNotBlank() }
-        val note = "Original tap expired. Opens $appLabel."
-        return if (body == null) note else "$body\n$note"
-    }
-
     fun fallbackMessage(openedApp: Boolean, appLabel: String): String {
         return if (openedApp) {
-            "Original tap expired. Opening $appLabel."
+            "Opening $appLabel."
         } else {
-            "Original notification action expired."
+            "Couldn't open that notification."
         }
     }
 }

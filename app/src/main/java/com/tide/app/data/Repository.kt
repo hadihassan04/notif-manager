@@ -452,7 +452,8 @@ class Repository(
         if (waiting.isEmpty()) return 0
         val releaseBatchId = openReleaseBatchId(nowMillis)
         dao.moveNotificationsToBatch(waiting.map { it.notificationKey }, releaseBatchId)
-        NotificationPublisher(context).release(waiting)
+        // Release is Inbox-only — never re-post to the Android shade.
+        waiting.forEach { NotificationPublisher.cancel(context, it.notificationKey) }
         return waiting.size
     }
 
@@ -465,13 +466,14 @@ class Repository(
         if (waiting.isEmpty()) return 0
         val releaseBatchId = openReleaseBatchId(now)
         dao.moveNotificationsToBatch(waiting.map { it.notificationKey }, releaseBatchId)
-        NotificationPublisher(context).release(waiting)
+        waiting.forEach { NotificationPublisher.cancel(context, it.notificationKey) }
         return waiting.size
     }
 
     suspend fun releaseBatch(batchId: String): Int {
         val notifications = dao.notificationsForBatch(batchId)
-        NotificationPublisher(context).release(notifications)
+        // Scheduled release lands in Inbox; do not push shade cards.
+        notifications.forEach { NotificationPublisher.cancel(context, it.notificationKey) }
         return notifications.size
     }
 
