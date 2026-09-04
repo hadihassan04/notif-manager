@@ -871,7 +871,6 @@ private fun NotificationsScreen(
     val dropGroups = remember(sections.drop) {
         groupNotifications(sections.drop?.notifications.orEmpty())
     }
-    val heldGroups = remember(sections.held) { groupNotifications(sections.held) }
     val olderGroups = remember(sections.older) { groupNotifications(sections.older) }
 
     fun dismissWithUndo(items: List<NotificationEntity>) {
@@ -900,14 +899,7 @@ private fun NotificationsScreen(
             item(key = "section_drop") {
                 InboxSectionLabel(
                     title = "Tide drop",
-                    caption = sections.drop?.let { batch ->
-                        val whenLabel = if (sections.dropUpcoming) {
-                            "delivers at ${formatTime(batch.releaseAtMillis)}"
-                        } else {
-                            "delivered at ${formatTime(batch.releaseAtMillis)}"
-                        }
-                        "$whenLabel · ${batch.summaryText}"
-                    } ?: "Nothing queued for the next delivery.",
+                    caption = null,
                 )
             }
             if (dropGroups.isEmpty()) {
@@ -937,32 +929,6 @@ private fun NotificationsScreen(
                         onArchive = { dismissWithUndo(group.items) },
                     )
                 }
-            }
-
-            item(key = "section_held") {
-                InboxSectionLabel(
-                    title = "Held",
-                    caption = if (heldGroups.isEmpty()) {
-                        "Nothing else waiting."
-                    } else {
-                        "${sections.held.size} waiting outside the drop"
-                    },
-                )
-            }
-            items(heldGroups, key = { "held_${it.rowKey}" }) { group ->
-                NotificationRow(
-                    modifier = Modifier.animateItem(
-                        fadeInSpec = spring(stiffness = Spring.StiffnessLow),
-                        fadeOutSpec = spring(stiffness = Spring.StiffnessLow),
-                        placementSpec = spring(
-                            dampingRatio = Spring.DampingRatioNoBouncy,
-                            stiffness = Spring.StiffnessLow,
-                        ),
-                    ),
-                    group = group,
-                    archiveLabel = "Dismiss",
-                    onArchive = { dismissWithUndo(group.items) },
-                )
             }
 
             item(key = "section_older") {
