@@ -401,6 +401,18 @@ class Repository(
         dao.deleteHistoryOlderThan(cutoffMillis)
     }
 
+    /** Clears the Older section only, leaving the Tide drop and Held items untouched. */
+    suspend fun clearHistory() {
+        val batches = buildInboxBatches(dao.activeBatchedNotifications(), dao.schedules())
+        val notifications = dao.observeAllNotifications().first()
+        val older = InboxLayout.partition(batches, notifications, System.currentTimeMillis()).older
+        val keys = older.map { it.notificationKey }
+        if (keys.isNotEmpty()) {
+            dao.deleteNotifications(keys)
+            keys.forEach(::removeFromShade)
+        }
+    }
+
     suspend fun initialize() {
         ensureSchedules()
         normalizeNonBatchableDefaults()

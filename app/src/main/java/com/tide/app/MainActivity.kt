@@ -435,6 +435,10 @@ class MainViewModel(
         viewModelScope.launch { repository.cleanupHistory(historyRetentionDays.value) }
     }
 
+    fun clearHistory() {
+        viewModelScope.launch { repository.clearHistory() }
+    }
+
     fun completeOnboarding(instantApps: List<InstalledApp> = emptyList()) {
         viewModelScope.launch {
             repository.applyPrioritySelection(
@@ -636,6 +640,7 @@ private fun TideRoot(
                                     onDismissNotifications = viewModel::dismissNotifications,
                                     onRestoreNotifications = viewModel::restoreNotifications,
                                     onUnarchiveNotifications = viewModel::unarchiveNotifications,
+                                    onClearHistory = viewModel::clearHistory,
                                 )
                                 Destination.Schedule -> ScheduleScreen(
                                     schedules = schedules,
@@ -820,8 +825,10 @@ private fun NotificationsScreen(
     onDismissNotifications: (List<NotificationEntity>) -> Unit,
     onRestoreNotifications: (List<NotificationEntity>) -> Unit,
     onUnarchiveNotifications: (List<String>) -> Unit,
+    onClearHistory: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
+    var showClearHistoryDialog by remember { mutableStateOf(false) }
     LaunchedEffect(requestedBatchExpansion) {
         if (requestedBatchExpansion != null) onBatchExpansionConsumed()
     }
@@ -959,7 +966,12 @@ private fun NotificationsScreen(
             }
 
             item(key = "section_older") {
-                InboxSectionLabel(title = "Older", caption = if (olderGroups.isEmpty()) "Nothing delivered yet." else null)
+                InboxSectionLabel(
+                    title = "Older",
+                    caption = null,
+                    actionLabel = if (olderGroups.isNotEmpty()) "Clear all" else null,
+                    onAction = { showClearHistoryDialog = true },
+                )
             }
             items(olderGroups, key = { "older_${it.rowKey}" }) { group ->
                 val archived = group.items.all { it.isArchived }
@@ -982,22 +994,54 @@ private fun NotificationsScreen(
             }
         }
     }
+
+    if (showClearHistoryDialog) {
+        AlertDialog(
+            onDismissRequest = { showClearHistoryDialog = false },
+            title = { Text("Clear history?") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onClearHistory()
+                        showClearHistoryDialog = false
+                    },
+                ) { Text("Clear") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearHistoryDialog = false }) { Text("Cancel") }
+            },
+        )
+    }
 }
 
 @Composable
-private fun InboxSectionLabel(title: String, caption: String?) {
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(
-            title,
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        if (!caption.isNullOrBlank()) {
+private fun InboxSectionLabel(
+    title: String,
+    caption: String?,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(
-                caption,
-                style = MaterialTheme.typography.bodySmall,
+                title,
+                style = MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            if (!caption.isNullOrBlank()) {
+                Text(
+                    caption,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        if (actionLabel != null && onAction != null) {
+            TextButton(onClick = onAction) { Text(actionLabel) }
         }
     }
 }
