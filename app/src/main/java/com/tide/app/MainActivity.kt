@@ -636,7 +636,6 @@ private fun TideRoot(
                                     onDismissNotifications = viewModel::dismissNotifications,
                                     onRestoreNotifications = viewModel::restoreNotifications,
                                     onUnarchiveNotifications = viewModel::unarchiveNotifications,
-                                    onDeliverNow = viewModel::deliverNotificationsNow,
                                 )
                                 Destination.Schedule -> ScheduleScreen(
                                     schedules = schedules,
@@ -821,7 +820,6 @@ private fun NotificationsScreen(
     onDismissNotifications: (List<NotificationEntity>) -> Unit,
     onRestoreNotifications: (List<NotificationEntity>) -> Unit,
     onUnarchiveNotifications: (List<String>) -> Unit,
-    onDeliverNow: (List<String>) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     LaunchedEffect(requestedBatchExpansion) {
@@ -930,11 +928,6 @@ private fun NotificationsScreen(
                         group = group,
                         archiveLabel = "Dismiss",
                         onArchive = { dismissWithUndo(group.items) },
-                        onDeliverNow = if (sections.dropUpcoming) {
-                            { onDeliverNow(group.notificationKeys) }
-                        } else {
-                            null
-                        },
                     )
                 }
             }
@@ -962,7 +955,6 @@ private fun NotificationsScreen(
                     group = group,
                     archiveLabel = "Dismiss",
                     onArchive = { dismissWithUndo(group.items) },
-                    onDeliverNow = { onDeliverNow(group.notificationKeys) },
                 )
             }
 
@@ -1016,15 +1008,13 @@ private fun NotificationRow(
     group: NotificationGroup,
     archiveLabel: String,
     onArchive: () -> Unit,
-    onDeliverNow: (() -> Unit)? = null,
 ) {
-    key(group.rowKey, archiveLabel, onDeliverNow != null) {
+    key(group.rowKey, archiveLabel) {
         NotificationRowContent(
             modifier = modifier,
             group = group,
             archiveLabel = archiveLabel,
             onArchive = onArchive,
-            onDeliverNow = onDeliverNow,
         )
     }
 }
@@ -1035,7 +1025,6 @@ private fun NotificationRowContent(
     group: NotificationGroup,
     archiveLabel: String,
     onArchive: () -> Unit,
-    onDeliverNow: (() -> Unit)?,
 ) {
     val swipeEnabled = archiveLabel != "Restore"
     if (swipeEnabled) {
@@ -1048,7 +1037,6 @@ private fun NotificationRowContent(
                 group = group,
                 archiveLabel = archiveLabel,
                 onArchive = onArchive,
-                onDeliverNow = onDeliverNow,
             )
         }
     } else {
@@ -1057,7 +1045,6 @@ private fun NotificationRowContent(
             group = group,
             archiveLabel = archiveLabel,
             onArchive = onArchive,
-            onDeliverNow = null,
         )
     }
 }
@@ -1072,7 +1059,7 @@ private val SwipeReturnSpec = spring<Float>(dampingRatio = 0.8f, stiffness = 200
 private val SwipeExitSpec = spring<Float>(dampingRatio = 1f, stiffness = 160f)
 
 /**
- * Android-shade swipe: left and right both dismiss. Deliver now is a separate button.
+ * Android-shade swipe: left and right both dismiss.
  */
 @Composable
 private fun SwipeableNotificationRow(
@@ -1188,7 +1175,6 @@ private fun NotificationCard(
     group: NotificationGroup,
     archiveLabel: String,
     onArchive: () -> Unit,
-    onDeliverNow: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val item = group.primary
@@ -1199,14 +1185,6 @@ private fun NotificationCard(
                 true
             },
         )
-        if (onDeliverNow != null) {
-            add(
-                CustomAccessibilityAction("Deliver now") {
-                    onDeliverNow()
-                    true
-                },
-            )
-        }
         add(
             CustomAccessibilityAction("Open") {
                 openOriginalNotification(context, item)
@@ -1257,15 +1235,6 @@ private fun NotificationCard(
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                }
-                if (onDeliverNow != null) {
-                    IconButton(onClick = onDeliverNow) {
-                        Icon(
-                            Icons.Filled.NotificationsActive,
-                            contentDescription = "Deliver now",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
                 }
                 IconButton(onClick = onArchive) {
                     Icon(
