@@ -401,7 +401,7 @@ class Repository(
         dao.deleteHistoryOlderThan(cutoffMillis)
     }
 
-    /** Clears the Older section only, leaving the Tide drop and Held items untouched. */
+    /** Clears the Older section only, leaving the Tide drop items untouched. */
     suspend fun clearHistory() {
         val batches = buildInboxBatches(dao.activeBatchedNotifications(), dao.schedules())
         val notifications = dao.observeAllNotifications().first()

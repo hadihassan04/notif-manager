@@ -14,7 +14,7 @@ class InboxLayoutTest {
     private val now = 1_000_000L
 
     @Test
-    fun nextScheduledBatchIsTheTideDropAndLaterWaitingGoesToHeld() {
+    fun nextScheduledBatchIsTheTideDropAndLaterWaitingIsMergedIn() {
         val dropItem = notification("drop", batchId = "2026-06-21-batch-1-1020", posted = now - 10_000)
         val laterItem = notification("later", batchId = "2026-06-21-batch-2-1320", posted = now - 5_000)
         val drop = batch("2026-06-21-batch-1-1020", listOf(dropItem), releaseAt = now + 60_000)
@@ -24,7 +24,10 @@ class InboxLayoutTest {
 
         assertEquals("2026-06-21-batch-1-1020", sections.drop?.batchId)
         assertTrue(sections.dropUpcoming)
-        assertEquals(listOf("later"), sections.held.map { it.notificationKey })
+        assertEquals(
+            listOf("drop", "later"),
+            sections.drop?.notifications?.map { it.notificationKey },
+        )
         assertTrue(sections.older.isEmpty())
     }
 
@@ -37,14 +40,14 @@ class InboxLayoutTest {
 
         assertEquals("2026-06-21-batch-1-1020", sections.drop?.batchId)
         assertFalse(sections.dropUpcoming)
-        assertTrue(sections.held.isEmpty())
+        assertEquals(listOf("released"), sections.drop?.notifications?.map { it.notificationKey })
         assertTrue(sections.older.isEmpty())
     }
 
     @Test
-    fun unbatchedAndInstantHistoryStayOutOfTheDrop() {
+    fun unbatchedWaitingItemIsMergedIntoDropAndInstantHistoryStaysOlder() {
         val dropItem = notification("drop", batchId = "2026-06-21-batch-1-1020", posted = now - 8_000)
-        val heldItem = notification("held", batchId = null, posted = now - 4_000)
+        val waitingItem = notification("waiting", batchId = null, posted = now - 4_000)
         val instant = notification(
             "instant",
             batchId = null,
@@ -62,22 +65,34 @@ class InboxLayoutTest {
 
         val sections = InboxLayout.partition(
             listOf(drop),
-            listOf(dropItem, heldItem, instant, dismissed),
+            listOf(dropItem, waitingItem, instant, dismissed),
             now,
         )
 
-        assertEquals(listOf("drop"), sections.drop?.notifications?.map { it.notificationKey })
-        assertEquals(listOf("held"), sections.held.map { it.notificationKey })
+        assertEquals(
+            listOf("drop", "waiting"),
+            sections.drop?.notifications?.map { it.notificationKey },
+        )
         assertEquals(listOf("instant", "old"), sections.older.map { it.notificationKey })
         assertTrue(sections.older.none { it.notificationKey == "drop" })
-        assertTrue(sections.older.none { it.notificationKey == "held" })
+        assertTrue(sections.older.none { it.notificationKey == "waiting" })
+    }
+
+    @Test
+    fun waitingItemsSurfaceAsDropEvenWithoutAScheduledBatch() {
+        val waitingItem = notification("waiting", batchId = null, posted = now - 4_000)
+
+        val sections = InboxLayout.partition(emptyList(), listOf(waitingItem), now)
+
+        assertEquals(listOf("waiting"), sections.drop?.notifications?.map { it.notificationKey })
+        assertFalse(sections.dropUpcoming)
+        assertTrue(sections.older.isEmpty())
     }
 
     @Test
     fun emptyInboxHasNoDrop() {
         val sections = InboxLayout.partition(emptyList(), emptyList(), now)
         assertNull(sections.drop)
-        assertTrue(sections.held.isEmpty())
         assertTrue(sections.older.isEmpty())
     }
 
