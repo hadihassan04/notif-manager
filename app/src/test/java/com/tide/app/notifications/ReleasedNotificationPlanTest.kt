@@ -34,23 +34,17 @@ class ReleasedNotificationPlanTest {
     }
 
     @Test
-    fun missingPendingIntentUsesActivityTrampolineAndSaysSo() {
+    fun missingPendingIntentKeepsOriginalBodyAndUsesTrampoline() {
         val item = item("wa-sng", "com.whatsapp", "WhatsApp", "SnG: Ahmar Jamal", "Also gpt coming today finally")
 
         val spec = ReleasedNotificationPlan.specs(listOf(item)) { false }.single()
 
         assertEquals(ReleasedTap.TRAMPOLINE, spec.tap)
         assertEquals("SnG: Ahmar Jamal", spec.title)
-        assertTrue(spec.text.orEmpty().contains("Also gpt coming today finally"))
-        assertTrue(spec.text.orEmpty().contains("Original tap expired. Opens WhatsApp."))
-        assertEquals(
-            "Original tap expired. Opening WhatsApp.",
-            ReleasedNotificationPlan.fallbackMessage(true, "WhatsApp"),
-        )
-        assertEquals(
-            "Original notification action expired.",
-            ReleasedNotificationPlan.fallbackMessage(false, "WhatsApp"),
-        )
+        assertEquals("Also gpt coming today finally", spec.text)
+        assertFalse(spec.text.orEmpty().lowercase().contains("expired"))
+        assertEquals("Opening WhatsApp.", ReleasedNotificationPlan.fallbackMessage(true, "WhatsApp"))
+        assertEquals("Couldn't open that notification.", ReleasedNotificationPlan.fallbackMessage(false, "WhatsApp"))
     }
 
     @Test
@@ -61,7 +55,7 @@ class ReleasedNotificationPlanTest {
 
         assertEquals(ReleasedTap.CAPTURED_INTENT, spec.tap)
         assertEquals("Also gpt coming today finally", spec.text)
-        assertFalse(spec.text.orEmpty().contains("Original tap expired"))
+        assertFalse(spec.text.orEmpty().lowercase().contains("expired"))
     }
 
     private fun item(
