@@ -1236,13 +1236,6 @@ private fun NotificationCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                IconButton(onClick = onArchive) {
-                    Icon(
-                        if (archiveLabel == "Restore") Icons.Filled.Restore else Icons.Filled.Close,
-                        contentDescription = archiveLabel,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
             }
         }
     }
