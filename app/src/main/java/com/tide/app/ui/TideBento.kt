@@ -35,6 +35,7 @@ object TideTopSlot {
  * Inbox and Schedule bento pieces: a compact wave-filled status, supporting
  * tiles for When, and a full-width action. Material You supplies the hue.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun TideHeroCard(
     eyebrow: String,
@@ -43,6 +44,8 @@ fun TideHeroCard(
     fill: Float,
     modifier: Modifier = Modifier,
     accent: Boolean = false,
+    onClick: (() -> Unit)? = null,
+    affordance: String? = null,
 ) {
     val container = if (accent) {
         MaterialTheme.colorScheme.tertiaryContainer
@@ -62,7 +65,21 @@ fun TideHeroCard(
     Surface(
         modifier = modifier
             .fillMaxWidth()
-            .semantics { contentDescription = "$eyebrow. $value. $caption" },
+            .clip(MaterialTheme.shapes.extraLarge)
+            .then(
+                if (onClick != null) {
+                    Modifier.combinedClickable(onClick = onClick)
+                } else {
+                    Modifier
+                },
+            )
+            .semantics {
+                contentDescription = if (affordance != null) {
+                    "$eyebrow. $value. $caption. $affordance"
+                } else {
+                    "$eyebrow. $value. $caption"
+                }
+            },
         color = container,
         shape = MaterialTheme.shapes.extraLarge,
     ) {
@@ -106,6 +123,18 @@ fun TideHeroCard(
                     color = onContainer.copy(alpha = 0.86f),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (affordance != null) {
+                Text(
+                    affordance,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = onContainer.copy(alpha = 0.7f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(horizontal = MdSpacing.sm, vertical = MdSpacing.xs),
                 )
             }
         }
