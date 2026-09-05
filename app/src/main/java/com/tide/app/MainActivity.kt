@@ -114,6 +114,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -836,6 +837,11 @@ private fun NotificationsScreen(
     val sections = remember(batches, notifications, nowMillis) {
         InboxLayout.partition(batches, notifications, nowMillis)
     }
+    var peekDrop by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(sections.dropUpcoming, isOpen) {
+        if (!sections.dropUpcoming || isOpen) peekDrop = false
+    }
+    val hideDrop = InboxLayout.shouldHideDropUntilPeek(sections.dropUpcoming, isOpen)
     val nextScheduleMillis = remember(schedules, nowMillis) {
         ScheduleCalculator().nextReleases(nowMillis, schedules).minByOrNull { it.triggerAtMillis }?.triggerAtMillis
     }
@@ -872,6 +878,12 @@ private fun NotificationsScreen(
         groupNotifications(sections.drop?.notifications.orEmpty())
     }
     val olderGroups = remember(sections.older) { groupNotifications(sections.older) }
+    val showDropSection = !hideDrop || peekDrop
+    val heroAffordance = if (hideDrop && !peekDrop && dropGroups.isNotEmpty()) {
+        "${dropGroups.size} waiting"
+    } else {
+        null
+    }
 
     fun dismissWithUndo(items: List<NotificationEntity>) {
         onDismissNotifications(items)
@@ -889,6 +901,8 @@ private fun NotificationsScreen(
                 caption = heroCaption,
                 fill = tideFill,
                 accent = isOpen,
+                onClick = if (hideDrop) ({ peekDrop = !peekDrop }) else null,
+                affordance = heroAffordance,
             )
         }
         LazyColumn(
@@ -896,38 +910,40 @@ private fun NotificationsScreen(
             contentPadding = PaddingValues(horizontal = MdSpacing.sm, vertical = MdSpacing.xs),
             verticalArrangement = Arrangement.spacedBy(MdSpacing.sm),
         ) {
-            item(key = "section_drop") {
-                InboxSectionLabel(
-                    title = "Tide drop",
-                    caption = null,
-                )
-            }
-            if (dropGroups.isEmpty()) {
-                item(key = "drop_empty") {
-                    EmptyState(
-                        title = "Quiet drop",
-                        body = if (isOpen) {
-                            "Routine notifications are arriving now."
-                        } else {
-                            "The next delivery is empty so far."
-                        },
+            if (showDropSection) {
+                item(key = "section_drop") {
+                    InboxSectionLabel(
+                        title = "Tide drop",
+                        caption = null,
                     )
                 }
-            } else {
-                items(dropGroups, key = { "drop_${it.rowKey}" }) { group ->
-                    NotificationRow(
-                        modifier = Modifier.animateItem(
-                            fadeInSpec = spring(stiffness = Spring.StiffnessLow),
-                            fadeOutSpec = spring(stiffness = Spring.StiffnessLow),
-                            placementSpec = spring(
-                                dampingRatio = Spring.DampingRatioNoBouncy,
-                                stiffness = Spring.StiffnessLow,
+                if (dropGroups.isEmpty()) {
+                    item(key = "drop_empty") {
+                        EmptyState(
+                            title = "Quiet drop",
+                            body = if (isOpen) {
+                                "Routine notifications are arriving now."
+                            } else {
+                                "The next delivery is empty so far."
+                            },
+                        )
+                    }
+                } else {
+                    items(dropGroups, key = { "drop_${it.rowKey}" }) { group ->
+                        NotificationRow(
+                            modifier = Modifier.animateItem(
+                                fadeInSpec = spring(stiffness = Spring.StiffnessLow),
+                                fadeOutSpec = spring(stiffness = Spring.StiffnessLow),
+                                placementSpec = spring(
+                                    dampingRatio = Spring.DampingRatioNoBouncy,
+                                    stiffness = Spring.StiffnessLow,
+                                ),
                             ),
-                        ),
-                        group = group,
-                        archiveLabel = "Dismiss",
-                        onArchive = { dismissWithUndo(group.items) },
-                    )
+                            group = group,
+                            archiveLabel = "Dismiss",
+                            onArchive = { dismissWithUndo(group.items) },
+                        )
+                    }
                 }
             }
 

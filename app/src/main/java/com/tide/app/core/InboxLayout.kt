@@ -21,6 +21,15 @@ data class InboxSections(
 object InboxLayout {
     const val UNBATCHED_BATCH_ID = "unbatched"
 
+    /**
+     * Beta peek-behind-countdown: the Tide drop list stays hidden behind the
+     * countdown hero until the user taps it to peek, but only while a drop is
+     * still upcoming. Open mode and just-released drops are never hidden.
+     */
+    fun shouldHideDropUntilPeek(dropUpcoming: Boolean, isOpen: Boolean): Boolean {
+        return dropUpcoming && !isOpen
+    }
+
     fun partition(
         batches: List<InboxBatch>,
         notifications: List<NotificationEntity>,

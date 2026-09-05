@@ -96,6 +96,14 @@ class InboxLayoutTest {
         assertTrue(sections.older.isEmpty())
     }
 
+    @Test
+    fun hidesDropOnlyWhenUpcomingAndNotOpen() {
+        assertTrue(InboxLayout.shouldHideDropUntilPeek(dropUpcoming = true, isOpen = false))
+        assertFalse(InboxLayout.shouldHideDropUntilPeek(dropUpcoming = true, isOpen = true))
+        assertFalse(InboxLayout.shouldHideDropUntilPeek(dropUpcoming = false, isOpen = false))
+        assertFalse(InboxLayout.shouldHideDropUntilPeek(dropUpcoming = false, isOpen = true))
+    }
+
     private fun notification(
         key: String,
         batchId: String?,
